@@ -1,0 +1,19 @@
+[package]
+name = "blaze3d"
+version = "0.1.0"
+edition = "2024"
+
+description = "wgpu-based 3D rendering library for Rust, targeting Minecraft-style voxel scenes: cameras, meshes, textures, shadows, post-processing and GPU readback."
+license = "MIT"
+repository = "https://github.com/Safery472/blaze3d"
+readme = "README.md"
+keywords = ["wgpu", "three-d", "rendering", "voxel", "graphics"]
+categories = ["graphics", "rendering", "game-development"]
+
+[dependencies]
+glam = "0.34.1"
+bytemuck = "1.25.2"
+
+wgpu = "30.0.1"
+
+thiserror = "2.0.21"
