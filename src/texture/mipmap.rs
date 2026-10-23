@@ -65,14 +65,14 @@ use super::image::{Texture, TextureKind};
 ///
 /// 模板中的 `{STORAGE_FORMAT}` 占位符由
 /// [`MipmapGenerator::ensure_compute_pipeline`] 替换成具体的格式名.
-const COMPUTE_SHADER_TEMPLATE_2D: &str = include_str!("../../shaders/mipmap.wgsl");
+const COMPUTE_SHADER_TEMPLATE_2D: &str = include_str!("../../shaders/mipmap.min.wgsl");
 
 /// 3D 维度使用的 compute 着色器模板.
-const COMPUTE_SHADER_TEMPLATE_3D: &str = include_str!("../../shaders/mipmap_3d.wgsl");
+const COMPUTE_SHADER_TEMPLATE_3D: &str = include_str!("../../shaders/mipmap_3d.min.wgsl");
 
 /// Cube 维度使用的 compute 着色器模板 (按 2D 数组处理).
 const COMPUTE_SHADER_TEMPLATE_CUBE: &str =
-	include_str!("../../shaders/mipmap_cube.wgsl");
+	include_str!("../../shaders/mipmap_cube.min.wgsl");
 
 /// Render pass 路径使用的 WGSL 源码.
 ///

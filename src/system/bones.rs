@@ -47,7 +47,7 @@ use crate::system::error::Result;
 /// - 骨骼在模型空间的位置 (相对骨骼原点的变换).
 /// - 动画带来的姿态 (旋转, 平移, 缩放).
 ///
-/// 该约定与 Minecraft 的骨骼模型一致.
+/// 该约定参考了 Minecraft 风格的骨骼模型.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct BoneMatrix {

@@ -1,0 +1,1 @@
+@group(0)@binding(0)var B:texture_3d<f32>;@group(0)@binding(1)var b:sampler;@group(0)@binding(2)var a:texture_storage_3d<{STORAGE_FORMAT},write>;@compute@workgroup_size(4,4,4)fn cs_main(@builtin(global_invocation_id)A:vec3u){let C=textureDimensions(a);if !(A.x>=C.x||A.y>=C.y||A.z>=C.z){textureStore(a,vec3i(A),textureSampleLevel(B,b,(vec3f(A)+.5)/vec3f(C),0));}}

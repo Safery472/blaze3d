@@ -138,19 +138,19 @@ impl BuiltinShader {
 	pub const fn source(self) -> &'static str {
 		match self {
 			BuiltinShader::PositionColor => {
-				include_str!("../../shaders/position_color.wgsl")
+				include_str!("../../shaders/position_color.min.wgsl")
 			}
 			BuiltinShader::PositionColorInstanced => {
-				include_str!("../../shaders/position_color_instanced.wgsl")
+				include_str!("../../shaders/position_color_instanced.min.wgsl")
 			}
 			BuiltinShader::PositionColorSkinned => {
-				include_str!("../../shaders/position_color_skinned.wgsl")
+				include_str!("../../shaders/position_color_skinned.min.wgsl")
 			}
 			BuiltinShader::PositionTex => {
-				include_str!("../../shaders/position_tex.wgsl")
+				include_str!("../../shaders/position_tex.min.wgsl")
 			}
 			BuiltinShader::PostCopy => {
-				include_str!("../../shaders/post_copy.wgsl")
+				include_str!("../../shaders/post_copy.min.wgsl")
 			}
 		}
 	}

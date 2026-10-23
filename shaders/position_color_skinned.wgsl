@@ -13,7 +13,7 @@
 //     skinned = Σ(weight[i] * bone_matrix[index[i]] * vertex_pos)
 //     world   = instance.model * skinned
 //
-// 与 Minecraft 的骨骼模型一致.
+// 参考 Minecraft 风格的骨骼模型.
 //
 // # 无骨骼实例
 //

@@ -1,0 +1,1 @@
+@group(0)@binding(0)var B:texture_2d_array<f32>;@group(0)@binding(2)var a:texture_storage_2d_array<{STORAGE_FORMAT},write>;@compute@workgroup_size(8,8)fn cs_main(@builtin(global_invocation_id)A:vec3u){let b=textureDimensions(a);if !(A.x>=b.x||A.y>=b.y){let C=vec2i(A.xy);textureStore(a,C,i32(A.z),textureLoad(B,C,i32(A.z),0));}}

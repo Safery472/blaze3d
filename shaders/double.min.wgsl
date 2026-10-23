@@ -1,0 +1,1 @@
+@group(0)@binding(0)var<storage>a:array<f32>;@group(0)@binding(1)var<storage,read_write>B:array<f32>;@compute@workgroup_size(64)fn cs_main(@builtin(global_invocation_id)A:vec3u){if A.x<arrayLength(&a){B[A.x]=a[A.x]*2;}}

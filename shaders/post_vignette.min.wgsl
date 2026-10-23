@@ -1,0 +1,1 @@
+struct a{@location(0)A:vec3f,@location(1)a:vec2f}struct C{@builtin(position)A:vec4f,@location(0)a:vec2f}@group(1)@binding(0)var B:texture_2d<f32>;@group(1)@binding(1)var b:sampler;@vertex fn vs_main(A:a)->C{return C(vec4(A.A,1),A.a);}@fragment fn fs_main(a:C)->@location(0)vec4f{let A=textureSample(B,b,a.a);return vec4(A.xyz*(1-smoothstep(.3,.75,distance(a.a,vec2(.5)))*.7),A.w);}

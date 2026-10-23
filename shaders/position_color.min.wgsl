@@ -1,0 +1,1 @@
+alias b=mat4x4f;alias C=vec4f;struct D{A:b,a:b,B:b,c:C,D:C,d:vec2f,E:f32,e:f32}struct d{A:b}struct E{@location(0)A:vec3f,@location(1)a:C}struct c{@builtin(position)A:C,@location(0)a:C}@group(0)@binding(0)var<uniform>a:D;@group(1)@binding(0)var<uniform>B:d;@vertex fn vs_main(A:E)->c{return c(a.A*(B.A*C(A.A,1)),A.a);}@fragment fn fs_main(b:c)->@location(0)C{return b.a;}

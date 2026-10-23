@@ -1,6 +1,8 @@
 # blaze3d
 
-基于 [wgpu](https://wgpu.rs) 的 Rust 3D 渲染库, 面向 Minecraft 风格的方块 / 体素场景. 从相机, 顶点构建, 纹理与 mipmap, 管线状态缓存, 阴影贴图, 后处理一直到 GPU 读回, 都提供开箱可用的实现.
+基于 [wgpu](https://wgpu.rs) 的 Rust 3D 渲染库, 面向方块 / 体素场景. 从相机, 顶点构建, 纹理与 mipmap, 管线状态缓存, 阴影贴图, 后处理一直到 GPU 读回, 都提供开箱可用的实现.
+
+> **商标声明**：“Minecraft”是 Mojang Synergies AB 和 Microsoft Corporation 的商标。`blaze3d` 是独立开源项目，与 Mojang 或 Microsoft 无隶属关系，也未获其背书。文中提及“Minecraft 风格”仅用于描述本库的适用场景，不表示任何官方关联或兼容性认证。
 
 crate 级别禁止 `unsafe` (`#![deny(unsafe_code)]`), 所有着色器以 WGSL 源码形式内嵌, 不依赖运行时文件.
 
