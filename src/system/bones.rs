@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 骨骼矩阵的存储缓冲.
 //!
 //! [`BoneBuffer`] 是一个 `storage buffer`, 存放所有实例的骨骼矩阵, 用于

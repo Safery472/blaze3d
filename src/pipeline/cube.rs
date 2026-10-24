@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 点光源与聚光灯的立方体阴影贴图.
 //!
 //! [`CubeShadowMap`] 是点光源阴影的核心资源: 一张立方体深度纹理, 从光源

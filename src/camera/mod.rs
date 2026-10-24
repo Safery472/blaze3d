@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 相机抽象层.
 //!
 //! [`Camera`] trait 把相机状态统一成视图矩阵 / 投影矩阵查询接口, 由两个

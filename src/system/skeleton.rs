@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 骨架与关键帧动画的采样.
 //!
 //! 本模块在 [`crate::system::bones::BoneBuffer`] 之上补齐完整的骨架动画

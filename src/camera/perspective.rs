@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 透视相机与透视投影.
 //!
 //! 投影呈现近大远小, 适用于 3D 场景.

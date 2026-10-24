@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 管线状态描述与管线缓存.
 //!
 //! 模块内容分两类:

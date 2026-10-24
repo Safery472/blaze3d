@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 带唯一 `id` 的管线布局句柄.
 //!
 //! [`LayoutHandle`] 把 [`wgpu::PipelineLayout`] 与它的唯一 `id` 绑定在一起.

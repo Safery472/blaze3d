@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! MSAA 颜色缓冲.
 //!
 //! [`MsaaBuffer`] 是多重采样的颜色纹理, 用于:

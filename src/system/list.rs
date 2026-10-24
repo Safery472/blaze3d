@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染列表 —— 收集绘制项, 排序后批量绘制.
 //!
 //! [`RenderList`] 先收集一组 [`DrawItem`] —— 网格, 对象 uniform 偏移,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 视锥 (`Frustum`) 与平面 (`Plane`).
 //!
 //! [`Frustum`] 是由六个归一化平面构成的集合, 从视图投影矩阵中提取, 供

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 共享的顺序索引缓冲.
 //!
 //! [`DrawMode`] 中的 `Quads` / `Triangles` / `Lines` 三种模式使用**顺序

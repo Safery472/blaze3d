@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! Mipmap 链的生成.
 //!
 //! 本模块提供两条生成路径:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 窗口表面 —— 逐帧取纹理, 提交与配置.
 //!
 //! [`SurfaceFrame`] 抽象「一次窗口渲染」: 从 [`wgpu::Surface`] 取到当前帧

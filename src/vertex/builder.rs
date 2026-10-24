@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点缓冲构建器, 负责拼装顶点字节.
 //!
 //! 从零拼装顶点数据的完整流程:

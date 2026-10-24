@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点数据的写入协议与多路广播装饰器.
 //!
 //! 本模块以 [`VertexConsumer`][] 作为写入顶点数据的统一接口. 实现者按

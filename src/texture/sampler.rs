@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 采样器资源的封装.
 //!
 //! [`Sampler`] 封装了 wgpu 的采样器. 它决定纹理采样时的过滤方式,

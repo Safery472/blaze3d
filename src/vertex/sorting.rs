@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 四边形图元的排序策略.
 //!
 //! 半透明绘制必须按从远到近的顺序进行, 否则混合结果会因深度冲突而

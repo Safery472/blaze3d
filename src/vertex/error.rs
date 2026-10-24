@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点模块统一的错误枚举.
 //!
 //! 所有可能失败的公开 API 都以 [`Result<T, Error>`][] 返回, 调用方只需

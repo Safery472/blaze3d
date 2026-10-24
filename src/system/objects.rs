@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 每对象 `uniform` 缓冲.
 //!
 //! [`ObjectBuffer`] 是一段连续的 `uniform` 缓冲, 每次绘制时通过

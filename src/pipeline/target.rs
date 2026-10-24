@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 离屏渲染目标.
 //!
 //! [`RenderTarget`] 描述一次渲染的目标表面: 颜色纹理, 可选的深度纹理,

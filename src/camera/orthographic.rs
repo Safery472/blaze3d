@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 正交相机与正交投影.
 //!
 //! 投影保持远近同大, 适用于 2D 场景, 工程图, 或有意压缩深度的 3D 场景.

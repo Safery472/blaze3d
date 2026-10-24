@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 后处理链.
 //!
 //! [`PostProcessChain`] 管理一串后处理 pass: 每个 pass 都用全屏四边形

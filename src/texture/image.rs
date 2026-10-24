@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 纹理资源的封装.
 //!
 //! [`Texture`] 表示一张 GPU 纹理, 支持三种维度:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 坐标轴朝向枚举.
 //!
 //! [`Direction`][] 表示六个坐标轴朝向, 主要用于贴花映射: 先根据

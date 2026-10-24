@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! `bind group` 与 `layout` 构建工具.
 //!
 //! wgpu 原生 API 要求手工构造 [`wgpu::BindGroupLayoutEntry`] 与

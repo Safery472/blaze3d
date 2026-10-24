@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 纹理资源与绑定资源的封装.
 //!
 //! 本模块提供四类基础设施, 分工如下:

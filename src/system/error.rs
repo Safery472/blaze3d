@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染系统的各类错误.
 //!
 //! 汇总 [`crate::system`] 模块内所有可能失败的公开 API.

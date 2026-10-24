@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! WGSL 着色器模块的封装.
 //!
 //! [`Shader`] 是 wgpu 着色器模块的包装, 同时记录一个用于管线缓存的 `id`.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点格式的定义.
 //!
 //! [`VertexFormat`][] 描述顶点数据在缓冲中的完整布局: 一串有序的

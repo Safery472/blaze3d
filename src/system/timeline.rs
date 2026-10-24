@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! GPU 时间线 —— 记录并读回每个 pass 的耗时.
 //!
 //! [`Timeline`] 借助 wgpu 的 `QuerySet` 统计每个 pass 的 GPU 耗时.

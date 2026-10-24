@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 深度缓冲.
 //!
 //! [`DepthBuffer`] 是独立于颜色附件的深度纹理, 用于:

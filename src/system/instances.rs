@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 实例数据的存储缓冲.
 //!
 //! [`InstanceBuffer`] 是存放逐实例数据的 `storage buffer`, 服务于 GPU

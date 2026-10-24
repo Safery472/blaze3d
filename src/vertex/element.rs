@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点元素的定义.
 //!
 //! 一个顶点元素由数据类型, 用途, 索引与分量数共同描述, 本模块同时给出

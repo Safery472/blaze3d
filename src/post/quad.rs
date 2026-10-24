@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 全屏四边形.
 //!
 //! [`FullscreenQuad`] 是一个覆盖 NDC `[-1, 1]` 全屏范围的四边形网格,

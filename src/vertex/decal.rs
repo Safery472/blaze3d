@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 贴花纹理坐标生成器.
 //!
 //! [`SheetedDecalTextureGenerator`][] 是一个顶点消费者装饰器: 它把

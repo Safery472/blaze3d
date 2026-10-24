@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 轴对齐包围盒 (`Aabb`).
 //!
 //! [`Aabb`] 是最常用的剔除几何体: 结构简单, 测试快速, 与视锥测试

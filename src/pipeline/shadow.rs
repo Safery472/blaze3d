@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 方向光阴影贴图.
 //!
 //! [`ShadowMap`] 是一张从光源视角渲染深度的离屏目标. 主渲染 pass 用

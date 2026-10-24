@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! blaze3d —— 基于 wgpu 的 3D 渲染库.
 //!
 //! 本 crate 提供 Minecraft 风格渲染所需的基础设施: 相机, 顶点数据构建,

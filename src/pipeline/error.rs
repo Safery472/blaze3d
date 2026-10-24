@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染目标与窗口表面的错误.
 //!
 //! 本模块覆盖 [`crate::pipeline`] 内所有可能失败的公开 API. 与 `vertex` /

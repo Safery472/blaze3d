@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染系统的长期资源与每帧流程.
 //!
 //! 本模块持有渲染流程所需的长期资源, 并协调每一帧的渲染顺序.

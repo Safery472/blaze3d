@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染管线.
 //!
 //! 本模块是「渲染目标」到「帧提交」之间的中间层. 与 [`crate::vertex`] 的

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 后处理图.
 //!
 //! [`PostProcessGraph`] 是 [`super::chain::PostProcessChain`] 的一般化.

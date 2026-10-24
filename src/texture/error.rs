@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 纹理与绑定模块的错误类型.
 //!
 //! 本模块覆盖 [`crate::texture`] 中所有可能失败的公开 API. 与 `vertex` /

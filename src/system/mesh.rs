@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 长驻 GPU 的网格缓冲.
 //!
 //! [`GpuMesh`] 是把 [`RenderedBuffer`] 上传到 wgpu 缓冲之后得到的产物.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 管线状态描述与布局句柄.
 //!
 //! 本模块导出以下内容:

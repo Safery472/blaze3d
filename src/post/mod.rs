@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 后处理.
 //!
 //! 渲染完成后对整帧做图像处理. 典型流程:

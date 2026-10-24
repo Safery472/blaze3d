@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 按层级组织的变换栈.
 //!
 //! [`PoseStack`][] 内部维护一组 `(pose, normal)` 矩阵对: `pose` 负责变换

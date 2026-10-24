@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 开箱即用的内置着色器集合.
 //!
 //! 本模块给出一组**开箱即用**的 WGSL 着色器, 与 [`crate::vertex`] 的

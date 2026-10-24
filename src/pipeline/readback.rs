@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 纹理与缓冲读回.
 //!
 //! 把 GPU 上的资源复制回 CPU, 用于截图, 测试断言, GPU 计算结果验证.

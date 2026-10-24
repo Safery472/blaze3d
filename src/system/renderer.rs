@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 渲染器 —— 持有长期资源, 把每帧拆成若干 pass 逐个记录.
 //!
 //! [`RenderSystem`] 持有渲染流程所需的全部长期资源. 渲染入口共三类:

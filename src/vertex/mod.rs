@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CynFox Team
+
 //! 顶点数据的构建管线.
 //!
 //! 从零拼装顶点数据, 直到产出可上传到 `wgpu` 缓冲的完整流程.
