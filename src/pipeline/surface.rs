@@ -35,12 +35,28 @@
 //!
 //! [`wgpu::SurfaceConfiguration`] 新增了 `color_space` 字段, 用于 HDR /
 //! wide-gamut 输出. 默认值 `SurfaceColorSpace::Auto` 适用于大多数场景.
+//!
+//! # 清屏颜色
+//!
+//! [`SurfaceFrame::acquire`] 产出的帧默认按 [`DEFAULT_SURFACE_CLEAR_COLOR`]
+//! (不透明黑) 清屏. 背景色由 [`SurfaceFrame::set_clear_color`] 设定, 与
+//! [`crate::pipeline::RenderTarget::clear_color`] 语义一致. sRGB 格式下
+//! 取值按线性空间解释, 详见该方法的「颜色空间」一节.
 
 use super::depth::DepthBuffer;
 use super::error::{Error, Result};
 use super::msaa::MsaaBuffer;
 use super::target::Target;
 use crate::state::{ColorFormat, DepthFormat};
+
+// ================ 清屏参数 ================
+
+/// [`SurfaceFrame`] 的默认清屏颜色 —— 不透明黑, 按 RGBA 顺序.
+///
+/// 取不透明黑而非 `RenderTarget` 的透明黑: surface 的 alpha 模式通常为
+/// `Opaque`, 写入的 alpha 不参与合成, 但取 1.0 可避免在
+/// `CompositeAlphaMode::PreMultiplied` 下出现整屏透明.
+pub const DEFAULT_SURFACE_CLEAR_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 /// 从窗口表面取得的一帧.
 ///
@@ -68,6 +84,9 @@ pub struct SurfaceFrame {
 	format: ColorFormat,
 	width: u32,
 	height: u32,
+
+	// 清屏颜色, 按 RGBA 顺序. 与 `RenderTarget::clear_color` 语义一致.
+	clear_color: [f32; 4],
 }
 
 impl SurfaceFrame {
@@ -131,7 +150,51 @@ impl SurfaceFrame {
 			format,
 			width: config.width,
 			height: config.height,
+			clear_color: DEFAULT_SURFACE_CLEAR_COLOR,
 		})
+	}
+
+	/// 设置本帧的清屏颜色, 按 RGBA 顺序.
+	///
+	/// # 行为
+	///
+	/// 颜色在 [`Target::color_attachment`] 构造颜色附件时生效, 因此
+	/// **必须**在记录 pass 之前调用; pass 记录之后再修改不会影响本帧.
+	///
+	/// 逐帧变化的背景色: 每帧 `acquire` 之后重新调用一次.
+	///
+	/// # 颜色空间
+	///
+	/// 取值的含义取决于 surface 格式, 与 `RenderTarget` 一致 —— 该值
+	/// 原样写进颜色附件, 不由本模块做任何换算:
+	///
+	/// - `Bgra8UnormSrgb` / `Rgba8UnormSrgb` —— wgpu 把该值当作**线性**
+	///   值, 编码成 sRGB 写入纹理. [`configure_surface`] 优先协商的就是
+	///   这两类格式.
+	/// - `Bgra8Unorm` / `Rgba8Unorm` / `Rgba16Float` —— 该值原样写入纹理,
+	///   即按 0..=1 的存储值解释.
+	///
+	/// 手上只有 sRGB 显示数值 (如设计稿里的 `0.11` 灰) 时: sRGB 格式下
+	/// 先换算成线性值 `≈ x²` (`0.11` 约为 `0.0116`), 否则画面明显偏亮.
+	/// 换算方式与 `RenderTarget` 相同.
+	///
+	/// # 参数
+	///
+	/// - `color` —— 清屏颜色, 按 RGBA 顺序; 第 4 个分量是 alpha.
+	///
+	/// # 示例
+	///
+	/// ```ignore
+	/// let mut frame = SurfaceFrame::acquire(&surface, &config, Some(&depth), Some(&msaa))?;
+	/// frame.set_clear_color([0.0116, 0.0116, 0.0116, 1.0]);
+	/// ```
+	pub fn set_clear_color(&mut self, color: [f32; 4]) {
+		self.clear_color = color;
+	}
+
+	/// 返回本帧的清屏颜色, 按 RGBA 顺序.
+	pub const fn clear_color(&self) -> [f32; 4] {
+		self.clear_color
 	}
 
 	/// 把当前帧提交到显示系统.
@@ -175,6 +238,7 @@ impl SurfaceFrame {
 			format: _,
 			width: _,
 			height: _,
+			clear_color: _,
 		} = self;
 
 		// **关键**: 先释放全部视图, 让 surface 纹理不再被任何视图引用.
@@ -217,13 +281,16 @@ impl Target for SurfaceFrame {
 	///
 	/// 启用 MSAA 时以 MSAA 视图为主附件, surface 视图充当
 	/// `resolve_target`.
+	///
+	/// 颜色附件按 [`SurfaceFrame::set_clear_color`] 设定的颜色清屏, 未
+	/// 设置时用 [`DEFAULT_SURFACE_CLEAR_COLOR`].
 	fn color_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
 		let ops = wgpu::Operations {
 			load: wgpu::LoadOp::Clear(wgpu::Color {
-				r: 0.0,
-				g: 0.0,
-				b: 0.0,
-				a: 1.0,
+				r: self.clear_color[0] as f64,
+				g: self.clear_color[1] as f64,
+				b: self.clear_color[2] as f64,
+				a: self.clear_color[3] as f64,
 			}),
 			store: wgpu::StoreOp::Store,
 		};
