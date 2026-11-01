@@ -77,5 +77,5 @@ pub use msaa::MsaaBuffer;
 pub use readback::{read_buffer, read_target, read_texture};
 pub use shadow::ShadowMap;
 pub use cube::{CubeFace, CubeShadowMap};
-pub use surface::{configure_surface, reconfigure_surface, SurfaceFrame};
+pub use surface::{DEFAULT_SURFACE_CLEAR_COLOR, SurfaceFrame, configure_surface, reconfigure_surface};
 pub use target::{clamp_to_limits, RenderTarget, Target, DEFAULT_HEIGHT, DEFAULT_WIDTH};

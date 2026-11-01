@@ -34,6 +34,11 @@
 //!
 //! crate 级别禁止 `unsafe` (见 `#![deny(unsafe_code)]`).
 
+// wgpu 的类型图较深 (ShaderModule -> DispatchShaderModule -> Arc<CoreShaderModule>
+// -> ... -> ComputePass). 证明这些类型满足 Send 时, trait 求解的嵌套深度超过
+// 默认上限 128. 提高上限以容纳 wgpu 的类型图; 只影响编译期, 不影响运行时.
+#![recursion_limit = "256"]
+
 #![deny(unsafe_code)]
 
 pub mod camera;
