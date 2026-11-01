@@ -284,7 +284,7 @@ impl Target for SurfaceFrame {
 	///
 	/// 颜色附件按 [`SurfaceFrame::set_clear_color`] 设定的颜色清屏, 未
 	/// 设置时用 [`DEFAULT_SURFACE_CLEAR_COLOR`].
-	fn color_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
+	fn color_attachment(&self) -> Option<wgpu::RenderPassColorAttachment<'_>> {
 		let ops = wgpu::Operations {
 			load: wgpu::LoadOp::Clear(wgpu::Color {
 				r: self.clear_color[0] as f64,
@@ -295,7 +295,7 @@ impl Target for SurfaceFrame {
 			store: wgpu::StoreOp::Store,
 		};
 
-		if let Some(msaa_view) = &self.msaa_view {
+		Some(if let Some(msaa_view) = &self.msaa_view {
 			wgpu::RenderPassColorAttachment {
 				view: msaa_view,
 				resolve_target: Some(&self.view),
@@ -309,7 +309,7 @@ impl Target for SurfaceFrame {
 				depth_slice: None,
 				ops,
 			}
-		}
+		})
 	}
 
 	fn depth_attachment(&self) -> Option<wgpu::RenderPassDepthStencilAttachment<'_>> {
@@ -347,6 +347,18 @@ impl Target for SurfaceFrame {
 ///
 /// 窗口创建后调用一次即可; 之后的 resize 交给 `reconfigure_surface`.
 ///
+/// # 错误
+///
+/// - 宽或高为 0 —— [`Error::InvalidSurfaceSize`].
+/// - 表面没有任何可用格式 —— [`Error::NoSurfaceFormat`].
+/// - 协商出的格式不在 [`ColorFormat`] 覆盖范围内 ——
+///   [`Error::UnsupportedSurfaceFormat`].
+///
+/// # 修改 present 模式
+///
+/// 建好配置后想换 present 模式, 用 [`set_present_mode`] —— 它会在核对
+/// 设备能力后重新配置表面. 只改 `config.present_mode` 字段不会生效.
+///
 /// # wgpu 30
 ///
 /// - `SurfaceConfiguration` 新增 `color_space` 字段 —— 用
@@ -360,6 +372,13 @@ pub fn configure_surface(
 	width: u32,
 	height: u32,
 ) -> Result<wgpu::SurfaceConfiguration> {
+	// 零尺寸配置会被 wgpu 拒绝, 之后的 `acquire` 也无从恢复 ——
+	// 窗口最小化时 `inner_size()` 正是 `0x0`. 调用方应等下一次尺寸
+	// 事件再来.
+	if width == 0 || height == 0 {
+		return Err(Error::InvalidSurfaceSize { width, height });
+	}
+
 	let caps = surface.get_capabilities(adapter);
 
 	if caps.formats.is_empty() {
@@ -412,6 +431,50 @@ pub fn configure_surface(
 	surface.configure(device, &config);
 
 	Ok(config)
+}
+
+/// 修改 present 模式并立刻重新配置表面.
+///
+/// # 为什么必须重新配置
+///
+/// `present_mode` 是 surface 配置的一部分, 只改
+/// [`wgpu::SurfaceConfiguration`] 的字段不会生效 —— 必须再调用一次
+/// [`wgpu::Surface::configure`]. 只改字段时, 首个 `configure` (在
+/// [`configure_surface`] 内部) 仍使用旧模式, 而之后的
+/// [`reconfigure_surface`] 会带着新值重新配置: 两端行为不一致, 且新值
+/// 未与设备能力核对.
+///
+/// # 设备不支持时
+///
+/// 取能力的**第一个**可用模式, 而不是保留请求值 —— 保留会让下一次
+/// `configure` 失败. 请求 [`wgpu::PresentMode::Fifo`] 且设备支持时,
+/// 结果就是 `Fifo`.
+///
+/// # 返回值
+///
+/// 实际生效的 present 模式.
+pub fn set_present_mode(
+	surface: &wgpu::Surface,
+	adapter: &wgpu::Adapter,
+	device: &wgpu::Device,
+	config: &mut wgpu::SurfaceConfiguration,
+	present_mode: wgpu::PresentMode,
+) -> wgpu::PresentMode {
+	let caps = surface.get_capabilities(adapter);
+
+	let actual = if caps.present_modes.contains(&present_mode) {
+		present_mode
+	} else {
+		caps.present_modes
+			.first()
+			.copied()
+			.unwrap_or(config.present_mode)
+	};
+
+	config.present_mode = actual;
+	surface.configure(device, config);
+
+	actual
 }
 
 /// 按新尺寸重新配置表面.

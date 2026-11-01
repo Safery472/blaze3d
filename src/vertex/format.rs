@@ -17,9 +17,18 @@
 //! - 每个元素的 `count` 都不为 0.
 //! - 每个元素都能映射到 [`wgpu::VertexFormat`][] (`Padding` 例外).
 //! - 第一个元素不是 `Padding`.
-//! - stride 累加不会溢出 `u32`.
+//! - 每个元素的字节数可表示, stride 累加不会溢出 `u32`.
+//! - stride 是 4 字节的倍数 —— `(Normal, Byte, 3)` 在 wgpu 侧是
+//!   `Snorm8x4`, 占 4 字节槽位.
 //!
 //! 任一项校验失败都会返回 [`Error`][], 不会 panic.
+//!
+//! # stride 对齐
+//!
+//! wgpu 要求 `array_stride` 是 [`wgpu::VERTEX_ALIGNMENT`] (4 字节) 的倍数.
+//! `(Normal, Byte, 3)` 在 wgpu 侧是 `Snorm8x4`, 按 4 字节计入; 其余组合
+//! 需要补齐时在格式里加 `Padding`, 否则构造会返回
+//! [`Error::StrideMisaligned`][].
 //!
 //! # 相等性
 //!
@@ -69,7 +78,9 @@ impl VertexFormat {
 	/// - [`Error::LeadingPadding`][]: 第一个元素是 `Padding`.
 	/// - [`Error::ZeroSizedElement`][]: 某个元素的 `count` 为 0.
 	/// - [`Error::UnsupportedElement`][]: 元素映射不到 wgpu 顶点格式.
-	/// - [`Error::StrideOverflow`][]: stride 累加结果超出 `u32`.
+	/// - [`Error::StrideOverflow`][]: 单个元素的字节数或 stride 累加结果
+	///   超出 `u32`.
+	/// - [`Error::StrideMisaligned`][]: stride 不是 4 的倍数.
 	pub fn new<I, S>(named_elements: I) -> Result<Self>
 	where
 		I: IntoIterator<Item = (S, VertexFormatElement)>,
@@ -109,7 +120,7 @@ impl VertexFormat {
 
 			element.wgpu_format()?;
 
-			let size = element.byte_size();
+			let size = element.checked_byte_size().ok_or(Error::StrideOverflow)?;
 			let new_offset = offset.checked_add(size).ok_or(Error::StrideOverflow)?;
 
 			offsets.push(offset);
@@ -122,6 +133,13 @@ impl VertexFormat {
 
 		if elements.is_empty() {
 			return Err(Error::Empty);
+		}
+
+		// wgpu 要求顶点缓冲的 stride 是 `VERTEX_ALIGNMENT` (4 字节) 的倍数.
+		// 在这里拦下, 调用方才拿得到 `Err`, 而不是等到创建管线时才收到
+		// wgpu 的验证错误.
+		if !offset.is_multiple_of(wgpu::VERTEX_ALIGNMENT as u32) {
+			return Err(Error::StrideMisaligned { stride: offset });
 		}
 
 		let mut wgpu_attributes = Vec::new();
@@ -267,7 +285,24 @@ pub mod defaults {
 		])
 	}
 
-	/// 方块渲染常用: 位置, 颜色, UV0, 光照与法线 (带 `Padding`).
+	/// 方块渲染常用: 位置, 颜色, UV0, 光照与法线, 每个顶点 36 字节.
+	///
+	/// # 布局
+	///
+	/// | 元素       | 偏移 | 字节 |
+	/// |------------|------|------|
+	/// | `Position` | 0    | 12   |
+	/// | `Color`    | 12   | 4    |
+	/// | `UV0`      | 16   | 8    |
+	/// | `UV2`      | 24   | 4    |
+	/// | `Normal`   | 28   | 4    |
+	/// | `Padding`  | 32   | 4    |
+	///
+	/// `Normal` 在 wgpu 侧是 `Snorm8x4`, 占满 4 字节槽位 (第 4 个分量不
+	/// 参与运算), 元素因此止于 32; 末尾 4 字节 `Padding` 把 stride 补到
+	/// 36. **不要**把它换成 `u8 x1`: `VertexFormat::new` 会返回
+	/// [`Error::StrideMisaligned`][crate::vertex::Error::StrideMisaligned],
+	/// 而 `make` 内部直接 panic.
 	pub fn block() -> VertexFormat {
 		make([
 			("Position", E::position_f32x3()),
@@ -275,11 +310,25 @@ pub mod defaults {
 			("UV0", E::uv0_f32x2()),
 			("UV2", E::uv2_u16x2()),
 			("Normal", E::normal_i8x3()),
-			("Padding", E::padding_u8x1()),
+			("Padding", E::padding_u8x4()),
 		])
 	}
 
-	/// 实体渲染常用: 在 `block` 的基础上多一个覆盖层 UV1.
+	/// 实体渲染常用: 在 `block` 的基础上多一个覆盖层 UV1, 每个顶点 40 字节.
+	///
+	/// # 布局
+	///
+	/// | 元素       | 偏移 | 字节 |
+	/// |------------|------|------|
+	/// | `Position` | 0    | 12   |
+	/// | `Color`    | 12   | 4    |
+	/// | `UV0`      | 16   | 8    |
+	/// | `UV1`      | 24   | 4    |
+	/// | `UV2`      | 28   | 4    |
+	/// | `Normal`   | 32   | 4    |
+	/// | `Padding`  | 36   | 4    |
+	///
+	/// 与 `block` 相同, 末尾 `Padding` 负责把 36 补齐到 40.
 	pub fn new_entity() -> VertexFormat {
 		make([
 			("Position", E::position_f32x3()),
@@ -288,7 +337,7 @@ pub mod defaults {
 			("UV1", E::uv1_i16x2()),
 			("UV2", E::uv2_u16x2()),
 			("Normal", E::normal_i8x3()),
-			("Padding", E::padding_u8x1()),
+			("Padding", E::padding_u8x4()),
 		])
 	}
 

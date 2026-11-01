@@ -72,7 +72,7 @@ use crate::shader::Shader;
 use crate::state::{ColorFormat, LayoutHandle, RenderType};
 use crate::system::Frame;
 
-use super::chain::PostProcessInput;
+use super::chain::{InputBindings, PostProcessInput};
 use super::quad::FullscreenQuad;
 
 // ================ 节点标识 ================
@@ -160,6 +160,9 @@ pub struct PostProcessGraph {
 	/// 输入纹理的 bind group layout, 对应 group 1.
 	input_layout: wgpu::BindGroupLayout,
 
+	/// texture / sampler 在 `input_layout` 中的 binding 编号.
+	input_bindings: InputBindings,
+
 	/// 构造输入 bind group 时使用的采样器.
 	sampler: wgpu::Sampler,
 
@@ -182,7 +185,9 @@ impl PostProcessGraph {
 	/// # 参数
 	///
 	/// - `input_layout` —— 输入纹理的 bind group layout, 定义每个输入
-	///   的 group 布局. 通常是 binding 0 = texture, binding 1 = sampler.
+	///   的 group 布局. 默认按 binding 0 = texture, binding 1 = sampler
+	///   重建中间输入的 bind group; 其他排布用
+	///   [`Self::with_input_bindings`] 覆盖.
 	/// - `sampler` —— 输入采样器.
 	pub fn new(
 		device: &wgpu::Device,
@@ -198,12 +203,27 @@ impl PostProcessGraph {
 			nodes: Vec::new(),
 			output: None,
 			input_layout,
+			input_bindings: InputBindings::default(),
 			sampler: sampler.clone(),
 			pool: GraphTargetPool::new(),
 			node_slots: HashMap::new(),
 			slot_bind_groups: Vec::new(),
 			cached_order: None,
 		}
+	}
+
+	/// 覆盖输入 texture / sampler 的 binding 编号.
+	///
+	/// 同 [`crate::post::PostProcessChain::with_input_bindings`] —— 只影响
+	/// 本图为中间输入重建的 bind group.
+	pub fn with_input_bindings(mut self, bindings: InputBindings) -> Self {
+		self.input_bindings = bindings;
+		self
+	}
+
+	/// 当前的输入 binding 编号.
+	pub fn input_bindings(&self) -> InputBindings {
+		self.input_bindings
 	}
 
 	// ================ 构建 ================
@@ -561,11 +581,11 @@ impl PostProcessGraph {
 				layout: &self.input_layout,
 				entries: &[
 					wgpu::BindGroupEntry {
-						binding: 0,
+						binding: self.input_bindings.texture,
 						resource: wgpu::BindingResource::TextureView(&target.color_view),
 					},
 					wgpu::BindGroupEntry {
-						binding: 1,
+						binding: self.input_bindings.sampler,
 						resource: wgpu::BindingResource::Sampler(&self.sampler),
 					},
 				],

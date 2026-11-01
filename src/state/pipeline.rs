@@ -499,8 +499,14 @@ pub struct RenderType {
 	pub write_mask: WriteMask,
 	/// 多边形填充方式.
 	pub polygon_mode: PolygonMode,
-	/// 颜色附件的格式.
-	pub color_format: ColorFormat,
+	/// 颜色附件的格式; `None` 表示管线**不输出颜色** (纯深度管线).
+	///
+	/// 与 [`WriteMask::DEPTH_ONLY`] 的配合: 前者让管线拒绝写颜色, 但渲染
+	/// 目标仍可能带颜色附件; `None` 则让管线声明 `color_targets: &[]`,
+	/// 只能用于**没有颜色附件**的 render pass. 阴影 pass 属于后者 ——
+	/// pass 里没有颜色附件时, 管线若声明了颜色目标, wgpu 会以
+	/// "Incompatible color attachments" 拒绝.
+	pub color_format: Option<ColorFormat>,
 	/// 深度附件的格式; `None` 表示不挂深度附件.
 	pub depth_format: Option<DepthFormat>,
 	/// MSAA 采样数; 取 1 即关闭 MSAA.
@@ -581,7 +587,7 @@ pub struct RenderTypeBuilder {
 	cull: CullMode,
 	write_mask: WriteMask,
 	polygon_mode: PolygonMode,
-	color_format: ColorFormat,
+	color_format: Option<ColorFormat>,
 	depth_format: Option<DepthFormat>,
 	sample_count: u32,
 	sort_on_upload: bool,
@@ -599,7 +605,7 @@ impl RenderTypeBuilder {
 			cull: CullMode::Back,
 			write_mask: WriteMask::ALL,
 			polygon_mode: PolygonMode::Fill,
-			color_format: ColorFormat::Bgra8UnormSrgb,
+			color_format: Some(ColorFormat::Bgra8UnormSrgb),
 			depth_format: Some(DepthFormat::Depth32Float),
 			sample_count: 1,
 			sort_on_upload: false,
@@ -650,7 +656,23 @@ impl RenderTypeBuilder {
 
 	/// 指定颜色附件格式.
 	pub fn color_format(mut self, f: ColorFormat) -> Self {
-		self.color_format = f;
+		self.color_format = Some(f);
+		self
+	}
+
+	/// 声明这是一条纯深度管线: 不输出颜色, 只能用于没有颜色附件的 pass.
+	///
+	/// # 用途
+	///
+	/// 阴影 pass 只需要深度. 配合 `CubeFaceTarget` (颜色附件为
+	/// `None`) 使用.
+	///
+	/// # 注意
+	///
+	/// 调用本方法后 `color_format` 变为 `None`. 之后再调用
+	/// [`Self::color_format`] 会把它改回去.
+	pub fn depth_only(mut self) -> Self {
+		self.color_format = None;
 		self
 	}
 
@@ -871,6 +893,28 @@ impl PipelineCache {
 				&non_empty_storage
 			};
 
+		// 颜色目标: `None` 时为空列表 (纯深度管线), 与 `None` 颜色附件的
+		// render pass 匹配. **不要**在 `color_format` 为 `None` 时仍给一个
+		// 占位格式: wgpu 会以附件格式不匹配拒绝.
+		//
+		// 与 `non_empty_storage` 同理, 声明在 `create_render_pipeline`
+		// 调用之前, 让借用的生命周期覆盖整个调用.
+		let color_targets: Vec<Option<wgpu::ColorTargetState>> = rt
+			.color_format
+			.map(|format| {
+				Some(wgpu::ColorTargetState {
+					format: format.wgpu(),
+					blend: rt.blend.wgpu_blend(),
+					write_mask: if rt.write_mask.color {
+						wgpu::ColorWrites::ALL
+					} else {
+						wgpu::ColorWrites::empty()
+					},
+				})
+			})
+			.into_iter()
+			.collect();
+
 		let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some(rt.name),
 			layout: Some(layout),
@@ -883,15 +927,7 @@ impl PipelineCache {
 			fragment: Some(wgpu::FragmentState {
 				module: shader,
 				entry_point: Some("fs_main"),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: rt.color_format.wgpu(),
-					blend: rt.blend.wgpu_blend(),
-					write_mask: if rt.write_mask.color {
-						wgpu::ColorWrites::ALL
-					} else {
-						wgpu::ColorWrites::empty()
-					},
-				})],
+				targets: &color_targets,
 				compilation_options: wgpu::PipelineCompilationOptions::default(),
 			}),
 			primitive: wgpu::PrimitiveState {

@@ -42,8 +42,22 @@
 //!
 //! # 采样方式
 //!
-//! 两条路径都使用双线性过滤. 当采样点与 2x2 纹素精确对齐时, 双线性等价于
-//! 对 4 个抽头取平均 (盒式滤波).
+//! 浮点格式的 `D2` / `D3` 路径使用双线性过滤: 采样点落在 2x2 纹素的中心,
+//! 双线性等价于对 4 个抽头取平均 (盒式滤波).
+//!
+//! Cube 路径改用 `textureLoad` 手工取 2x2 抽头后求平均 —— 没有采样器的
+//! 浮点双线性会引入面边界缝隙, 见上文「Cube 的处理方式」.
+//!
+//! # 整数格式
+//!
+//! `Rgba8Uint` 这类整数 storage 格式没有浮点着色器可用 —— WGSL 里
+//! `texture_storage_2d<rgba8uint, write>` 只能接受 `vec4<u32>` /
+//! `vec4<i32>`, 而 `vec4<f32>` 无法隐式转换. 本模块因此为整数格式生成
+//! 专门的着色器变体: 采样类型, 向量类型与是否有采样器一并切换, 见
+//! `mipmap_sample_kind` 与 `compute_variant`.
+//!
+//! 整数路径**不做**采样, 改为按 2x2 抽头手工求和后整除 —— 整数纹理没有
+//! 双线性的概念. 降采样结果因此是块平均值向下取整.
 //!
 //! # 格式绑定
 //!
@@ -51,13 +65,11 @@
 //! 格式都要有独立的着色器模块与独立的 bind group layout, 视图维度同样算
 //! layout 的一部分. 因此 `MipmapGenerator` 在 compute 端的缓存键取
 //! (维度, 格式) 二元组, **而非** 单维度或单格式.
-//!
-//! [`Texture::generate_mipmaps`]: crate::texture::Texture::generate_mipmaps
 
 use std::collections::HashMap;
 
-use crate::system::GpuMesh;
-use crate::vertex::{formats, BufferBuilder, DrawMode, VertexConsumer};
+use crate::post::FullscreenQuad;
+use crate::vertex::formats;
 
 use super::error::{Error, Result};
 use super::image::{Texture, TextureKind};
@@ -67,15 +79,28 @@ use super::image::{Texture, TextureKind};
 /// 2D 维度使用的 compute 着色器模板.
 ///
 /// 模板中的 `{STORAGE_FORMAT}` 占位符由
-/// [`MipmapGenerator::ensure_compute_pipeline`] 替换成具体的格式名.
+/// [`MipmapGenerator::ensure_compute_pipeline`] 替换成具体的格式名,
+/// `{VTYPE}` 按 [`mipmap_sample_kind`] 替换成 `f32` / `u32` / `i32`.
 const COMPUTE_SHADER_TEMPLATE_2D: &str = include_str!("../../shaders/mipmap.min.wgsl");
 
 /// 3D 维度使用的 compute 着色器模板.
 const COMPUTE_SHADER_TEMPLATE_3D: &str = include_str!("../../shaders/mipmap_3d.min.wgsl");
 
-/// Cube 维度使用的 compute 着色器模板 (按 2D 数组处理).
-const COMPUTE_SHADER_TEMPLATE_CUBE: &str =
-	include_str!("../../shaders/mipmap_cube.min.wgsl");
+/// Cube 维度使用的 compute 着色器模板 (按 2D 数组处理, 手工 2x2 抽头).
+const COMPUTE_SHADER_TEMPLATE_2D_ARRAY: &str =
+	include_str!("../../shaders/mipmap_array.min.wgsl");
+
+/// 2D 数组整数格式使用的 compute 着色器模板.
+const COMPUTE_SHADER_TEMPLATE_2D_INTEGER_ARRAY: &str =
+	include_str!("../../shaders/mipmap_array_integer.min.wgsl");
+
+/// 2D 维度整数格式使用的 compute 着色器模板.
+const COMPUTE_SHADER_TEMPLATE_2D_INTEGER: &str =
+	include_str!("../../shaders/mipmap_integer.min.wgsl");
+
+/// 3D 维度整数格式使用的 compute 着色器模板.
+const COMPUTE_SHADER_TEMPLATE_3D_INTEGER: &str =
+	include_str!("../../shaders/mipmap_integer_3d.min.wgsl");
 
 /// Render pass 路径使用的 WGSL 源码.
 ///
@@ -83,7 +108,7 @@ const COMPUTE_SHADER_TEMPLATE_CUBE: &str =
 /// 值, 而不是写入 `texture_storage_2d`. 因此本源码不要求 storage 支持 ——
 /// 它正是 sRGB 等格式的回退路径.
 const RENDER_SHADER_SOURCE: &str = r#"
-@group(0) @binding(0) var input_texture: texture_2d<f32>;
+@group(0) @binding(0) var input_texture: texture_2d<{VTYPE}>;
 @group(0) @binding(1) var input_sampler: sampler;
 
 struct VertexInput {
@@ -105,10 +130,68 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> @location(0) vec4<{VTYPE}> {
     return textureSample(input_texture, input_sampler, in.uv);
 }
 "#;
+
+// ================ 采样种类 ================
+
+/// 纹理在 compute 路径中的采样种类.
+///
+/// WGSL 的 storage texture 格式与着色器里的向量类型必须匹配: `rgba8uint`
+/// 只能写 `vec4<u32>`, 采样也只能得到 `vec4<u32>`. 本枚举把两者捆在一起,
+/// 避免出现「layout 声明浮点、着色器写整数」这种必然失败的组合.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SampleKind {
+	/// 浮点格式, 可过滤, 走双线性采样.
+	Float,
+	/// 无符号整数格式, 不可过滤, 手工取 2x2 抽头.
+	Uint,
+	/// 有符号整数格式, 不可过滤, 手工取 2x2 抽头.
+	Sint,
+}
+
+impl SampleKind {
+	/// 着色器里使用的向量标量类型名.
+	const fn wgsl_type(self) -> &'static str {
+		match self {
+			Self::Float => "f32",
+			Self::Uint => "u32",
+			Self::Sint => "i32",
+		}
+	}
+
+	/// 对应的 `wgpu::TextureSampleType`.
+	const fn sample_type(self) -> wgpu::TextureSampleType {
+		match self {
+			Self::Float => wgpu::TextureSampleType::Float { filterable: true },
+			Self::Uint => wgpu::TextureSampleType::Uint,
+			Self::Sint => wgpu::TextureSampleType::Sint,
+		}
+	}
+
+	/// 只有浮点格式能用过滤采样器.
+	const fn filterable(self) -> bool {
+		matches!(self, Self::Float)
+	}
+}
+
+/// 按 wgpu 格式的语义名判断采样种类.
+///
+/// 判断依据是格式名的后缀 (`uint` / `sint`), 而非逐个列举格式 —— 后者
+/// 容易与 [`storage_format_name`] 的支持表漂移. 不在该表里的格式返回
+/// `None`, 与 `storage_format_name` 保持同一口径.
+fn mipmap_sample_kind(format: wgpu::TextureFormat) -> Option<SampleKind> {
+	let name = storage_format_name(format)?;
+	if name.ends_with("uint") {
+		Some(SampleKind::Uint)
+	} else if name.ends_with("sint") {
+		Some(SampleKind::Sint)
+	} else {
+		Some(SampleKind::Float)
+	}
+}
 
 // ================ `MipmapGenerator` ================
 
@@ -162,17 +245,24 @@ pub struct MipmapGenerator {
 	// 视图维度支持, 而且把 render pass 渲染进体纹理在 wgpu 中并非所有后端都
 	// 支持. 因此 3D / Cube 遇到不支持 storage 的格式时只能报错.
 
-	/// Render 路径使用的 bind group layout (仅 2D).
-	render_bind_group_layout: wgpu::BindGroupLayout,
+	/// Render 路径的 bind group layout (仅 2D), 按格式缓存.
+	///
+	/// 采样类型随格式变化 (浮点可过滤, 整数不可), 因此不能共用一个
+	/// layout.
+	render_bind_group_layouts:
+		HashMap<wgpu::TextureFormat, wgpu::BindGroupLayout>,
 
-	/// Render 路径管线的 layout (仅 2D).
-	render_pipeline_layout: wgpu::PipelineLayout,
+	/// Render 路径管线的 layout (仅 2D), 按格式缓存.
+	render_pipeline_layouts: HashMap<wgpu::TextureFormat, wgpu::PipelineLayout>,
 
 	/// 以格式为键缓存的 render 管线 (仅 2D).
 	render_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
 
 	/// 全屏四边形网格, 首次用到时才创建.
-	quad: Option<GpuMesh>,
+	///
+	/// 与后处理共用 [`FullscreenQuad`] —— 顶点布局 (position + uv0) 与
+	/// 绕序完全相同, 不另写一份.
+	quad: Option<FullscreenQuad>,
 }
 
 impl MipmapGenerator {
@@ -200,40 +290,6 @@ impl MipmapGenerator {
 			..Default::default()
 		});
 
-		let render_bind_group_layout =
-			device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-				label: Some("mipmap_render_bgl"),
-				entries: &[
-					wgpu::BindGroupLayoutEntry {
-						binding: 0,
-						visibility: wgpu::ShaderStages::FRAGMENT,
-						ty: wgpu::BindingType::Texture {
-							sample_type: wgpu::TextureSampleType::Float {
-								filterable: true,
-							},
-							view_dimension: wgpu::TextureViewDimension::D2,
-							multisampled: false,
-						},
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 1,
-						visibility: wgpu::ShaderStages::FRAGMENT,
-						ty: wgpu::BindingType::Sampler(
-							wgpu::SamplerBindingType::Filtering,
-						),
-						count: None,
-					},
-				],
-			});
-
-		let render_pipeline_layout =
-			device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-				label: Some("mipmap_render_layout"),
-				bind_group_layouts: &[Some(&render_bind_group_layout)],
-				immediate_size: 0,
-			});
-
 		Self {
 			device: device.clone(),
 			queue: queue.clone(),
@@ -241,8 +297,8 @@ impl MipmapGenerator {
 			compute_layouts: HashMap::new(),
 			compute_pipeline_layouts: HashMap::new(),
 			compute_pipelines: HashMap::new(),
-			render_bind_group_layout,
-			render_pipeline_layout,
+			render_bind_group_layouts: HashMap::new(),
+			render_pipeline_layouts: HashMap::new(),
 			render_pipelines: HashMap::new(),
 			quad: None,
 		}
@@ -253,15 +309,25 @@ impl MipmapGenerator {
 	/// # 路径选择
 	///
 	/// - 格式支持 storage 且纹理带 `STORAGE_BINDING` 用途: 走 compute 路径.
-	/// - 否则纹理带 `RENDER_ATTACHMENT` 用途: 走 render pass 路径.
+	/// - 否则纹理带 `RENDER_ATTACHMENT` 用途, 且格式是浮点: 走 render pass
+	///   路径.
 	/// - 两者都不满足: 返回 [`Error::MissingMipmapUsage`].
+	///
+	/// 整数格式即使带 `RENDER_ATTACHMENT` 也只会走 compute —— render 回退
+	/// 路径的着色器按 `vec4<f32>` 输出, 无法写整数颜色附件.
 	///
 	/// # 前置条件
 	///
 	/// - 需满足 `texture.mip_level_count() >= mip_count`.
-	/// - `texture` 带 `TEXTURE_BINDING` 用途.
-	/// - 纹理不是 MSAA (`sample_count == 1`).
+	/// - 纹理必须是单采样 (`sample_count == 1`).
 	/// - mip 0 层已经写入内容.
+	///
+	/// # 错误
+	///
+	/// - `mip_count == 0` 或超过纹理的 Mip 层数 —— [`Error::InvalidMipCount`].
+	/// - 纹理是 MSAA —— [`Error::IncompatibleKind`].
+	/// - 没有可用路径 —— [`Error::MissingMipmapUsage`] 或
+	///   [`Error::IncompatibleKind`].
 	///
 	/// # 参数
 	///
@@ -271,9 +337,15 @@ impl MipmapGenerator {
 	/// - `format`: 纹理格式. 既决定走哪条路径, 也是 compute 端 layout 与管线
 	///   缓存键的组成部分.
 	/// - `base_depth`: mip 0 的深度, 只有 `D3` 会用到 —— 其他维度传 1.
-	///   **不能**从 `texture` 读取 —— `wgpu::Texture` 不暴露尺寸, 必须由持有
-	///   [`crate::texture::Texture`] 的调用方传入.
 	/// - `mip_count`: 生成的级数, 逐级处理 1 到 `mip_count - 1`.
+	/// - `base_size`: mip 0 的 `(width, height)`. **不能**从 `texture`
+	///   读取 —— [`wgpu::Texture`] 不暴露尺寸, 必须由持有
+	///   [`crate::texture::Texture`] 的调用方传入. 传错会让每级读写的
+	///   范围与真实尺寸不符.
+	#[allow(
+		clippy::too_many_arguments,
+		reason = "这些都是纹理自身的描述; 打包成结构体会逼调用方先拆一层"
+	)]
 	pub fn generate(
 		&mut self,
 		encoder: &mut wgpu::CommandEncoder,
@@ -282,26 +354,51 @@ impl MipmapGenerator {
 		format: wgpu::TextureFormat,
 		base_depth: u32,
 		mip_count: u32,
+		base_size: (u32, u32),
 	) -> Result<()> {
-		let usage = texture.usage();
+		let available = texture.mip_level_count();
+		if mip_count == 0 || mip_count > available {
+			return Err(Error::InvalidMipCount {
+				requested: mip_count,
+				available,
+			});
+		}
+		if texture.sample_count() != 1 {
+			return Err(Error::IncompatibleKind {
+				kind,
+				reason: "mipmap generation requires a non-multisampled texture",
+			});
+		}
 
-		let compute_ok = storage_format_name(format).is_some()
+		let usage = texture.usage();
+		let sample_kind = mipmap_sample_kind(format);
+
+		let compute_ok = sample_kind.is_some()
 			&& usage.contains(wgpu::TextureUsages::STORAGE_BINDING);
-		let render_ok = usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+		let render_ok = usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+			&& matches!(sample_kind, Some(SampleKind::Float));
 
 		if compute_ok {
-			self.generate_compute(encoder, texture, kind, format, base_depth, mip_count);
+			self.generate_compute(
+				encoder,
+				texture,
+				kind,
+				format,
+				base_depth,
+				mip_count,
+				base_size,
+			);
 			Ok(())
 		} else if kind == TextureKind::D2 && render_ok {
 			// render 回退路径只对 2D 有定义 —— 详见 struct 文档.
 			self.generate_render(encoder, texture, format, mip_count);
 			Ok(())
-		} else if render_ok {
-			// 3D / Cube 虽带 `RENDER_ATTACHMENT`, 格式却不支持 storage:
-			// 没有可用路径, 因此明确报错, 不做静默跳过.
+		} else if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+			// D3 / Cube 带上 `RENDER_ATTACHMENT`, 或 D2 的格式不支持 storage:
+			// render 回退路径覆盖不到, 因此明确报错, 不做静默跳过.
 			Err(Error::IncompatibleKind {
 				kind,
-				reason: "mipmap generation for D3/Cube requires a storage-capable format",
+				reason: "render fallback only covers float-format D2 textures",
 			})
 		} else {
 			Err(Error::MissingMipmapUsage)
@@ -310,6 +407,10 @@ impl MipmapGenerator {
 
 	// ================ Compute 路径 ================
 
+	#[allow(
+		clippy::too_many_arguments,
+		reason = "与 `generate` 保持同一套参数, 避免调用处再做拆包"
+	)]
 	fn generate_compute(
 		&mut self,
 		encoder: &mut wgpu::CommandEncoder,
@@ -318,6 +419,7 @@ impl MipmapGenerator {
 		format: wgpu::TextureFormat,
 		base_depth: u32,
 		mip_count: u32,
+		base_size: (u32, u32),
 	) {
 		self.ensure_compute_pipeline(kind, format);
 
@@ -329,6 +431,13 @@ impl MipmapGenerator {
 		let layout = self.compute_layouts.get(&key).expect("just inserted");
 		let sampler = &self.sampler;
 		let device = &self.device;
+		let sample_kind = mipmap_sample_kind(format).expect("compute path has a sample kind");
+
+		// 采样器只在浮点变体里存在, 与 `create_compute_layout` 的 binding 1
+		// 一一对应. **不要**无条件绑定界外条目: layout 里没有 binding 1 时
+		// 创建 bind group 会直接验证失败.
+		let with_sampler =
+			variant_uses_sampler(kind, compute_variant(kind, sample_kind));
 
 		// 降采样要求源视图与目标视图分别是 sampled 视图与 storage 视图, 且视图
 		// 维度随 kind 变化 —— 三种 kind 的视图创建参数各不相同.
@@ -353,7 +462,7 @@ impl MipmapGenerator {
 		pass.set_pipeline(pipeline);
 
 		for level in 1..mip_count {
-			let (w, h) = mip_dimensions(texture.width(), texture.height(), level);
+			let (w, h) = mip_dimensions(base_size.0, base_size.1, level);
 			let d = mip_depth(base_depth, kind, level);
 
 			// 源视图指向上一级, 目标视图指向当前级, 创建方式如下:
@@ -364,23 +473,7 @@ impl MipmapGenerator {
 				create_mip_view(texture, src_dim, kind, level - 1);
 			let dst_view = create_mip_view(texture, dst_dim, kind, level);
 
-			let bind_group = if kind == TextureKind::Cube {
-				// Cube 路径不使用采样器, bind group 只有 binding 0 与 2.
-				device.create_bind_group(&wgpu::BindGroupDescriptor {
-					label: Some("mipmap_compute_bg"),
-					layout,
-					entries: &[
-						wgpu::BindGroupEntry {
-							binding: 0,
-							resource: wgpu::BindingResource::TextureView(&src_view),
-						},
-						wgpu::BindGroupEntry {
-							binding: 2,
-							resource: wgpu::BindingResource::TextureView(&dst_view),
-						},
-					],
-				})
-			} else {
+			let bind_group = if with_sampler {
 				device.create_bind_group(&wgpu::BindGroupDescriptor {
 					label: Some("mipmap_compute_bg"),
 					layout,
@@ -392,6 +485,23 @@ impl MipmapGenerator {
 						wgpu::BindGroupEntry {
 							binding: 1,
 							resource: wgpu::BindingResource::Sampler(sampler),
+						},
+						wgpu::BindGroupEntry {
+							binding: 2,
+							resource: wgpu::BindingResource::TextureView(&dst_view),
+						},
+					],
+				})
+			} else {
+				// Cube 路径改用 `textureLoad`; 整数格式不可过滤 —— 两者
+				// 的 bind group 都只有 binding 0 与 2.
+				device.create_bind_group(&wgpu::BindGroupDescriptor {
+					label: Some("mipmap_compute_bg"),
+					layout,
+					entries: &[
+						wgpu::BindGroupEntry {
+							binding: 0,
+							resource: wgpu::BindingResource::TextureView(&src_view),
 						},
 						wgpu::BindGroupEntry {
 							binding: 2,
@@ -432,14 +542,22 @@ impl MipmapGenerator {
 
 		let storage_format = storage_format_name(format)
 			.expect("compute path requires a storage-capable format");
+		let sample_kind = mipmap_sample_kind(format)
+			.expect("every storage-capable format has a sample kind");
 
-		// 按维度挑选对应的着色器模板.
-		let template = match kind {
-			TextureKind::D2 => COMPUTE_SHADER_TEMPLATE_2D,
-			TextureKind::D3 => COMPUTE_SHADER_TEMPLATE_3D,
-			TextureKind::Cube => COMPUTE_SHADER_TEMPLATE_CUBE,
+		// 按维度与着色器变体挑选模板.
+		let variant = compute_variant(kind, sample_kind);
+		let template = match (kind, variant) {
+			(TextureKind::Cube, ComputeVariant::Integer) => COMPUTE_SHADER_TEMPLATE_2D_INTEGER_ARRAY,
+			(TextureKind::Cube, _) => COMPUTE_SHADER_TEMPLATE_2D_ARRAY,
+			(TextureKind::D3, ComputeVariant::Float) => COMPUTE_SHADER_TEMPLATE_3D,
+			(TextureKind::D3, ComputeVariant::Integer) => COMPUTE_SHADER_TEMPLATE_3D_INTEGER,
+			(TextureKind::D2, ComputeVariant::Float) => COMPUTE_SHADER_TEMPLATE_2D,
+			(_, _) => COMPUTE_SHADER_TEMPLATE_2D_INTEGER,
 		};
-		let source = template.replace("{STORAGE_FORMAT}", storage_format);
+		let source = template
+			.replace("{STORAGE_FORMAT}", storage_format)
+			.replace("{VTYPE}", sample_kind.wgsl_type());
 
 		let shader = self
 			.device
@@ -451,7 +569,7 @@ impl MipmapGenerator {
 		// 该 (维度, 格式) 首次出现时, 一并建出它需要的 layout 与 pipeline
 		// layout —— 两者都与格式绑定, 都要按双键缓存.
 		if !self.compute_layouts.contains_key(&key) {
-			let bgl = create_compute_layout(&self.device, kind, format);
+			let bgl = create_compute_layout(&self.device, kind, format, sample_kind);
 			self.compute_layouts.insert(key, bgl);
 		}
 		if !self.compute_pipeline_layouts.contains_key(&key) {
@@ -500,7 +618,10 @@ impl MipmapGenerator {
 			.render_pipelines
 			.get(&format)
 			.expect("just inserted");
-		let layout = &self.render_bind_group_layout;
+		let layout = self
+			.render_bind_group_layouts
+			.get(&format)
+			.expect("just inserted");
 		let sampler = &self.sampler;
 		let device = &self.device;
 
@@ -559,27 +680,98 @@ impl MipmapGenerator {
 
 			pass.set_pipeline(pipeline);
 			pass.set_bind_group(0, &bind_group, &[]);
-			pass.set_vertex_buffer(0, quad.vertex_buffer().slice(..));
-			pass.draw(0..quad.vertex_count(), 0..1);
+			let mesh = quad.mesh();
+			pass.set_vertex_buffer(0, mesh.vertex_buffer().slice(..));
+			pass.draw(0..mesh.vertex_count(), 0..1);
 		}
 	}
 
 	fn ensure_quad(&mut self) {
 		if self.quad.is_none() {
-			self.quad = Some(create_fullscreen_quad(&self.device, &self.queue));
+			self.quad = Some(
+				FullscreenQuad::new(&self.device, &self.queue)
+					.expect("failed to create fullscreen quad"),
+			);
 		}
 	}
 
+	/// 为该格式准备好 render 回退路径的 layout 与管线.
+	///
+	/// # 为什么按格式缓存
+	///
+	/// 着色器里的纹理向量类型与 layout 的采样类型都随格式变化: 浮点可
+	/// 过滤或不可过滤, 整数则是 `Uint` / `Sint`. 三者不能共用一份.
 	fn ensure_render_pipeline(&mut self, format: wgpu::TextureFormat) {
 		if self.render_pipelines.contains_key(&format) {
 			return;
 		}
 
+		let sample_kind = mipmap_sample_kind(format).unwrap_or(SampleKind::Float);
+
+		if !self.render_bind_group_layouts.contains_key(&format) {
+			// 不可过滤的浮点格式 (例如 `R32Float`) 没有设备特性
+			// `FLOAT32_FILTERABLE` 时只能声明 `NonFiltering`, 采样器也随之
+			// 换成非过滤类型; 此时双线性退化为点采样, 但结果仍可读.
+			let filterable = sample_kind.filterable();
+			let texture_sample_type = if filterable {
+				wgpu::TextureSampleType::Float { filterable: true }
+			} else {
+				match sample_kind {
+					SampleKind::Float => wgpu::TextureSampleType::Float { filterable: false },
+					SampleKind::Uint => wgpu::TextureSampleType::Uint,
+					SampleKind::Sint => wgpu::TextureSampleType::Sint,
+				}
+			};
+			let sampler_type = if filterable {
+				wgpu::SamplerBindingType::Filtering
+			} else {
+				wgpu::SamplerBindingType::NonFiltering
+			};
+
+			let bgl = self
+				.device
+				.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+					label: Some("mipmap_render_bgl"),
+					entries: &[
+						wgpu::BindGroupLayoutEntry {
+							binding: 0,
+							visibility: wgpu::ShaderStages::FRAGMENT,
+							ty: wgpu::BindingType::Texture {
+								sample_type: texture_sample_type,
+								view_dimension: wgpu::TextureViewDimension::D2,
+								multisampled: false,
+							},
+							count: None,
+						},
+						wgpu::BindGroupLayoutEntry {
+							binding: 1,
+							visibility: wgpu::ShaderStages::FRAGMENT,
+							ty: wgpu::BindingType::Sampler(sampler_type),
+							count: None,
+						},
+					],
+				});
+
+			let pl = self
+				.device
+				.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+					label: Some("mipmap_render_layout"),
+					bind_group_layouts: &[Some(&bgl)],
+					immediate_size: 0,
+				});
+
+			self.render_bind_group_layouts.insert(format, bgl);
+			self.render_pipeline_layouts.insert(format, pl);
+		}
+
+		// 着色器按格式的采样种类替换成对应向量类型.
+		let source = RENDER_SHADER_SOURCE.replace("{VTYPE}", sample_kind.wgsl_type());
+
 		let shader = self
 			.device
 			.create_shader_module(wgpu::ShaderModuleDescriptor {
 				label: Some("mipmap_render_shader"),
-				source: wgpu::ShaderSource::Wgsl(RENDER_SHADER_SOURCE.into()),
+				source: wgpu::ShaderSource::Wgsl(source.into()),
 			});
 
 		let vertex_format = formats::position_tex();
@@ -590,7 +782,7 @@ impl MipmapGenerator {
 			self.device
 				.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 					label: Some("mipmap_render_pipeline"),
-					layout: Some(&self.render_pipeline_layout),
+					layout: Some(&self.render_pipeline_layouts[&format]),
 					vertex: wgpu::VertexState {
 						module: &shader,
 						entry_point: Some("vs_main"),
@@ -703,6 +895,7 @@ impl Texture {
 			self.format(),
 			self.depth(),
 			mip_count,
+			self.size(),
 		)?;
 
 		queue.submit(Some(encoder.finish()));
@@ -789,13 +982,51 @@ fn create_mip_view(
 	})
 }
 
+/// compute 路径用哪种着色器变体.
+///
+/// 三件事必须同时对上, 否则创建管线或 bind group 时报验证错误: 着色器
+/// 声明的 binding, layout 的条目, 以及着色器里的向量类型.
+///
+/// - 浮点格式可以声明采样器, 做双线性采样.
+/// - 整数格式不可过滤, 只能 `textureLoad` 后手工求和.
+/// - Cube 一律用 `textureLoad` —— 方向采样会在面边界引入缝隙.
+///
+/// 因此模板按「维度 × 是否带采样器」两个维度划分, 而不是三个维度
+/// 各自硬编码一份.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComputeVariant {
+	/// 带采样器的浮点着色器 —— 双线性采样, 等价于 2x2 盒式平均.
+	Float,
+	/// 不带采样器的整数着色器 —— `textureLoad` 手工取抽头后整除.
+	Integer,
+}
+
+/// 按维度与采样种类挑出着色器变体.
+///
+/// Cube 一律走不带采样器的模板: 即使纹理是浮点, 也要用 `textureLoad`
+/// 手工抽头, 否则会在面边界引入方向插值.
+fn compute_variant(kind: TextureKind, sample_kind: SampleKind) -> ComputeVariant {
+	if sample_kind.filterable() && kind != TextureKind::Cube {
+		ComputeVariant::Float
+	} else {
+		ComputeVariant::Integer
+	}
+}
+
+/// 该变体是否声明采样器 (binding 1).
+const fn variant_uses_sampler(kind: TextureKind, variant: ComputeVariant) -> bool {
+	matches!(variant, ComputeVariant::Float) && !matches!(kind, TextureKind::Cube)
+}
+
 /// 为 (维度, 格式) 创建 compute 路径所需的 bind group layout.
 ///
 /// # 条目
 ///
-/// - binding 0: 采样用的源纹理.
-/// - binding 1: 采样器. **Cube 路径不设采样器** —— 它改用 `textureLoad`;
-///   该路径的 layout 只含纹理与 storage 两项.
+/// 由 [`ComputeVariant`] 决定:
+///
+/// - binding 0: 采样用的源纹理. 采样类型取自 `sample_kind` —— 整数格式
+///   声明为 `Uint` / `Sint`, 与着色器里的 `vec4<u32>` / `vec4<i32>` 对应.
+/// - binding 1: 采样器. **只有 [`ComputeVariant::Float`] 有这一项**.
 /// - binding 2: 作为写入目标的 storage 纹理.
 ///
 /// # 格式
@@ -809,118 +1040,58 @@ fn create_compute_layout(
 	device: &wgpu::Device,
 	kind: TextureKind,
 	format: wgpu::TextureFormat,
+	sample_kind: SampleKind,
 ) -> wgpu::BindGroupLayout {
 	use wgpu::TextureViewDimension as D;
 
-	match kind {
-		TextureKind::Cube => {
-			// Cube 路径: binding 0 是 `texture_2d_array`, binding 2 是
-			// `texture_storage_2d_array`; 不设采样器 (改用 `textureLoad`).
-			device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-				label: Some("mipmap_compute_bgl_cube"),
-				entries: &[
-					wgpu::BindGroupLayoutEntry {
-						binding: 0,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::Texture {
-							sample_type: wgpu::TextureSampleType::Float {
-								filterable: true,
-							},
-							view_dimension: D::D2Array,
-							multisampled: false,
-						},
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 2,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::StorageTexture {
-							access: wgpu::StorageTextureAccess::WriteOnly,
-							format,
-							view_dimension: D::D2Array,
-						},
-						count: None,
-					},
-				],
-			})
-		}
+	let variant = compute_variant(kind, sample_kind);
+	let view_dimension = match kind {
+		TextureKind::D2 => D::D2,
+		TextureKind::D3 => D::D3,
+		TextureKind::Cube => D::D2Array,
+	};
 
-		TextureKind::D3 => {
-			device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-				label: Some("mipmap_compute_bgl_3d"),
-				entries: &[
-					wgpu::BindGroupLayoutEntry {
-						binding: 0,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::Texture {
-							sample_type: wgpu::TextureSampleType::Float {
-								filterable: true,
-							},
-							view_dimension: D::D3,
-							multisampled: false,
-						},
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 1,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::Sampler(
-							wgpu::SamplerBindingType::Filtering,
-						),
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 2,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::StorageTexture {
-							access: wgpu::StorageTextureAccess::WriteOnly,
-							format,
-							view_dimension: D::D3,
-						},
-						count: None,
-					},
-				],
-			})
-		}
+	let mut entries = vec![wgpu::BindGroupLayoutEntry {
+		binding: 0,
+		visibility: wgpu::ShaderStages::COMPUTE,
+		ty: wgpu::BindingType::Texture {
+			sample_type: sample_kind.sample_type(),
+			view_dimension,
+			multisampled: false,
+		},
+		count: None,
+	}];
 
-		TextureKind::D2 => {
-			device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-				label: Some("mipmap_compute_bgl"),
-				entries: &[
-					wgpu::BindGroupLayoutEntry {
-						binding: 0,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::Texture {
-							sample_type: wgpu::TextureSampleType::Float {
-								filterable: true,
-							},
-							view_dimension: D::D2,
-							multisampled: false,
-						},
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 1,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::Sampler(
-							wgpu::SamplerBindingType::Filtering,
-						),
-						count: None,
-					},
-					wgpu::BindGroupLayoutEntry {
-						binding: 2,
-						visibility: wgpu::ShaderStages::COMPUTE,
-						ty: wgpu::BindingType::StorageTexture {
-							access: wgpu::StorageTextureAccess::WriteOnly,
-							format,
-							view_dimension: D::D2,
-						},
-						count: None,
-					},
-				],
-			})
-		}
+	if variant == ComputeVariant::Float {
+		entries.push(wgpu::BindGroupLayoutEntry {
+			binding: 1,
+			visibility: wgpu::ShaderStages::COMPUTE,
+			ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+			count: None,
+		});
 	}
+
+	entries.push(wgpu::BindGroupLayoutEntry {
+		binding: 2,
+		visibility: wgpu::ShaderStages::COMPUTE,
+		ty: wgpu::BindingType::StorageTexture {
+			access: wgpu::StorageTextureAccess::WriteOnly,
+			format,
+			view_dimension,
+		},
+		count: None,
+	});
+
+	let label = match kind {
+		TextureKind::D2 => "mipmap_compute_bgl",
+		TextureKind::D3 => "mipmap_compute_bgl_3d",
+		TextureKind::Cube => "mipmap_compute_bgl_cube",
+	};
+
+	device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+		label: Some(label),
+		entries: &entries,
+	})
 }
 
 /// 查出格式在 WGSL 里对应的 storage texture 格式名.
@@ -980,35 +1151,4 @@ fn storage_format_name(format: wgpu::TextureFormat) -> Option<&'static str> {
 
 		_ => None,
 	}
-}
-
-/// 构建一个全屏四边形网格.
-///
-/// 顶点的 Position 已经是 NDC 坐标, UV 覆盖 `(0, 0)` 到 `(1, 1)`.
-///
-/// # 为什么用 `TriangleList`
-///
-/// `DrawMode::Quads` 依赖共享索引缓冲, 而那是 `RenderSystem` 的资源.
-/// `MipmapGenerator` 与 `RenderSystem` 相互独立, 取不到共享索引, 因此只能用
-/// `TriangleList`.
-fn create_fullscreen_quad(device: &wgpu::Device, queue: &wgpu::Queue) -> GpuMesh {
-	let mut builder = BufferBuilder::with_capacity(6 * 20);
-	let mut b = builder.begin(DrawMode::Triangles, formats::position_tex());
-
-	for (x, y, u, v) in [
-		(-1.0_f32, -1.0_f32, 0.0_f32, 1.0_f32),
-		(1.0, -1.0, 1.0, 1.0),
-		(1.0, 1.0, 1.0, 0.0),
-		(-1.0, -1.0, 0.0, 1.0),
-		(1.0, 1.0, 1.0, 0.0),
-		(-1.0, 1.0, 0.0, 0.0),
-	] {
-		b.vertex(x, y, 0.0).expect("vertex");
-		b.uv(u, v).expect("uv");
-		b.end_vertex().expect("end_vertex");
-	}
-
-	let rendered = b.end();
-	GpuMesh::new(device, queue, &rendered)
-		.expect("failed to create fullscreen quad")
 }

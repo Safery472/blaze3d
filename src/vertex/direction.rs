@@ -49,8 +49,10 @@ impl Direction {
 	/// # 行为
 	///
 	/// 比较三个分量的绝对值, 最大分量所在的轴即为结果. 分量为 0 时
-	/// 按 `< 0.0` 判为负向, 也就是 0 归入正向. 该判定是稳定的, 不会
-	/// 因浮点误差在正负之间来回跳.
+	/// 按 `< 0.0` 判为负向, 也就是 0 归入正向: 零向量与 `+Y` 都返回
+	/// [`Self::Up`]. 该判定是稳定的, 不会因浮点误差在正负之间来回跳.
+	///
+	/// 绝对值相等的轴按 Y, Z, X 的优先顺序取第一个.
 	///
 	/// # 参数
 	///
@@ -59,11 +61,14 @@ impl Direction {
 		// 先取绝对值再比较, 判定结果不受向量整体缩放的影响.
 		let abs = normal.abs();
 
+		// 三个分支统一用 `>= 0.0` 判定正向 —— 与文档里「0 归入正向」的
+		// 约定一致. **不要**改成 `> 0.0`: 那样零向量会落到 `-Y` 轴
+		// (`Down`), 而 `+Y` 轴换成 `-0.0` 时又会翻到另一侧, 判定不对称.
 		if abs.y >= abs.x && abs.y >= abs.z {
-			if normal.y > 0.0 { Self::Up } else { Self::Down }
+			if normal.y >= 0.0 { Self::Up } else { Self::Down }
 		} else if abs.z >= abs.x {
-			if normal.z > 0.0 { Self::South } else { Self::North }
-		} else if normal.x > 0.0 {
+			if normal.z >= 0.0 { Self::South } else { Self::North }
+		} else if normal.x >= 0.0 {
 			Self::East
 		} else {
 			Self::West

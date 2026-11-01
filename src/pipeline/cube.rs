@@ -33,15 +33,45 @@
 //! ```text
 //! 1. 阴影 pass (每个面一次):
 //!    a. 用 light_view_projection(face) 覆盖 globals.view_projection.
-//!    b. 渲染场景几何到 target().face_view(face) 作为深度附件.
+//!    b. 渲染场景几何到该面的视图 (face_view) 作为深度附件.
 //!
 //! 2. 主渲染 pass:
 //!    a. shader 里:
 //!       - 世界坐标 → 光源空间方向 dir = world_pos - light_pos.
 //!       - 距离 = length(dir).
-//!       - reference = (far - near) / distance ... 或直接比较线性深度.
+//!       - reference = dist / far, 或直接用 light_view_projection 算深度.
 //!       - textureSampleCompareLevel(cube_depth, cube_sampler, dir, reference)
 //! ```
+//!
+//! # 按面渲染
+//!
+//! [`CubeShadowMap::render_face`] 给出一个实现了 [`Target`] 的
+//! [`CubeFaceTarget`], 直接传给 [`crate::system::RenderSystem::render_frame`]:
+//!
+//! ```ignore
+//! for face in CubeFace::ALL {
+//!     system.globals_mut().view_projection =
+//!         cube_shadow.light_view_projection(face).to_cols_array_2d();
+//!     system.render_frame(&cube_shadow.render_face(face), |pass| {
+//!         pass.set_render_type(&shadow_rt, &shadow_shader_mesh, &shadow_layout);
+//!         pass.set_object(offset);
+//!         pass.draw_mesh(&mesh);
+//!     });
+//! }
+//! ```
+//!
+//! 传给 `render_face` 之前**必须**先把光源视角矩阵写进 globals ——
+//! `CubeFaceTarget` 只提供附件与尺寸, 不碰 globals.
+//!
+//! # 为什么没有颜色附件
+//!
+//! 深度附件是必需的, 颜色附件则是 [`Target`] 的签名要求. 本类型返回
+//! `None` —— [`crate::system::Frame::pass`] 会据此构造一个 **不含**
+//! 颜色附件的 render pass (wgpu 允许这种 pass), 阴影 pass 因此完全不
+//! 消耗颜色带宽.
+//!
+//! [`Target`]: crate::pipeline::Target
+//! [`Frame::pass`]: crate::system::Frame::pass
 //!
 //! # WGSL 采样示例
 //!
@@ -69,9 +99,12 @@
 
 use glam::{Mat4, Vec3};
 
+use crate::state::ColorFormat;
 use crate::texture::Sampler;
 
 use super::error::{Error, Result};
+use super::target::Target;
+use super::transform::look_at_rh;
 
 /// 立方体阴影贴图采用的深度格式.
 ///
@@ -325,9 +358,12 @@ impl CubeShadowMap {
 	/// for face in CubeFace::ALL {
 	///     system.globals_mut().view_projection =
 	///         cube_shadow.light_view_projection(face).to_cols_array_2d();
-	///     // 渲染到 cube_shadow.face_view(device, face) 作为深度附件.
+	///     // 渲染到 cube_shadow.face_view(face) 作为深度附件.
 	/// }
 	/// ```
+	///
+	/// `face_view` 只在这里取一次引用即可 —— 它借用 `&mut self`, 记录
+	/// render pass 期间不能再修改 `cube_shadow` 的其他字段.
 	pub fn light_view_projection(&self, face: CubeFace) -> Mat4 {
 		// 透视投影取 90° FOV —— 立方体的每个面正好覆盖 90°.
 		let proj = perspective_rh(
@@ -377,6 +413,43 @@ impl CubeShadowMap {
 		self.face_views[idx].as_ref().expect("just inserted")
 	}
 
+	/// 返回某个面的渲染目标, 可直接交给
+	/// [`crate::system::RenderSystem::render_frame`].
+	///
+	/// # 行为
+	///
+	/// 首次请求某个面时才创建该面的视图并缓存; 之后每次调用都复用同一
+	/// 视图, 不产生分配.
+	///
+	/// # 错误 (没有)
+	///
+	/// 视图创建不会失败 —— `Texture::create_view` 只有参数非法时才 panic,
+	/// 而这里的参数由纹理自身的尺寸与层数推导, 恒合法.
+	///
+	/// # 注意
+	///
+	/// 返回的 [`CubeFaceTarget`] 借用 `self`, 记录 pass 期间**不能**再
+	/// 修改 `CubeShadowMap` 的其他字段. 先算出光源视角矩阵并写入
+	/// globals, 再调用本方法.
+	pub fn render_face(&mut self, face: CubeFace) -> CubeFaceTarget<'_> {
+		let idx = face.layer() as usize;
+		if self.face_views[idx].is_none() {
+			let view = self.texture.create_view(&wgpu::TextureViewDescriptor {
+				label: Some("cube_shadow_face_view"),
+				dimension: Some(wgpu::TextureViewDimension::D2),
+				base_array_layer: face.layer(),
+				array_layer_count: Some(1),
+				..Default::default()
+			});
+			self.face_views[idx] = Some(view);
+		}
+		CubeFaceTarget {
+			view: self.face_views[idx].as_ref().expect("just inserted"),
+			size: self.size,
+			face,
+		}
+	}
+
 	/// 返回立方体视图 —— 主 pass 的 shader 用它采样.
 	pub fn cube_view(&self) -> &wgpu::TextureView {
 		&self.cube_view
@@ -418,6 +491,73 @@ impl CubeShadowMap {
 	}
 }
 
+// ================ 单面渲染目标 ================
+
+/// 立方体阴影贴图的一个面, 作为 render pass 的目标.
+///
+/// 由 [`CubeShadowMap::render_face`] 构造, 借用阴影贴图本身 —— 生命周期
+/// 与 `&mut CubeShadowMap` 一致.
+///
+/// # 颜色附件
+///
+/// 返回 `None`: 阴影 pass 只需要深度. 见模块文档的「为什么没有颜色附件」.
+pub struct CubeFaceTarget<'a> {
+	/// 该面的 `D2` 深度视图.
+	view: &'a wgpu::TextureView,
+
+	/// 单面分辨率.
+	size: u32,
+
+	/// 对应的面, 供诊断使用.
+	face: CubeFace,
+}
+
+impl CubeFaceTarget<'_> {
+	/// 该目标对应的面.
+	pub const fn face(&self) -> CubeFace {
+		self.face
+	}
+}
+
+impl Target for CubeFaceTarget<'_> {
+	/// 没有颜色附件.
+	///
+	/// `Target::color_attachment` 的返回类型是单个附件而不是 `Option`,
+	/// 而本类型确实不需要颜色输出 —— 这意味着 `Frame::pass` 无法通过
+	/// 这个签名表达「无颜色」。因此 `Frame::pass` 对 `None` 有专门处理,
+	/// 见该方法的文档.
+	fn color_attachment(&self) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+		None
+	}
+
+	/// 深度附件: 每面独立清屏.
+	///
+	/// 6 个面共用同一张纹理, **只清一次会留下上一帧的内容** —— 因此
+	/// 每次进入该面的 pass 都以 1.0 清深度.
+	fn depth_attachment(&self) -> Option<wgpu::RenderPassDepthStencilAttachment<'_>> {
+		Some(wgpu::RenderPassDepthStencilAttachment {
+			view: self.view,
+			depth_ops: Some(wgpu::Operations {
+				load: wgpu::LoadOp::Clear(1.0),
+				store: wgpu::StoreOp::Store,
+			}),
+			stencil_ops: None,
+		})
+	}
+
+	fn viewport_size(&self) -> (u32, u32) {
+		(self.size, self.size)
+	}
+
+	/// 深度格式, 不是颜色格式.
+	///
+	/// 传 [`ColorFormat::Rgba8Unorm`] 是任意的: 没有颜色附件时该值不会
+	/// 被 wgpu 用来校验任何东西.
+	fn color_format(&self) -> ColorFormat {
+		ColorFormat::Rgba8Unorm
+	}
+}
+
 // ================ 数学辅助函数 ================
 
 /// 构造右手系透视投影矩阵.
@@ -434,23 +574,4 @@ fn perspective_rh(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
 		glam::Vec4::new(0.0, 0.0, far * nf, -1.0),
 		glam::Vec4::new(0.0, 0.0, far * near * nf, 0.0),
 	)
-}
-
-/// 构造右手系 look-at 视图矩阵.
-///
-/// 实现与 [`crate::pipeline::shadow`] 里的同名函数一致 —— 那个是私有
-/// 函数, 这里复制一份, 以保持模块之间互不依赖.
-fn look_at_rh(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
-	let away = (eye - target).normalize();
-	let right = up.cross(away).normalize();
-	let up = away.cross(right);
-
-	let world = Mat4::from_cols(
-		right.extend(0.0),
-		up.extend(0.0),
-		away.extend(0.0),
-		eye.extend(1.0),
-	);
-
-	world.inverse()
 }

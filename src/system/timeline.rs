@@ -125,6 +125,21 @@ impl Timeline {
 		Some((begin, end))
 	}
 
+	/// 取回最近一次分配到的 `end` 索引, 不消耗新的容量.
+	///
+	/// # 用途
+	///
+	/// 记录 pass 的流程分两步: 开始记录前写入 `begin`, 记录完再写入
+	/// `end`. 两步之间要经过 [`wgpu::RenderPass`] 的可变借用, 没法把
+	/// 返回值一直带在身边, 因此结束时间戳靠这里取回, 而不是再次
+	/// `allocate_pair` —— 那样会多占一对索引, 并让 `used_ranges` 里多出
+	/// 一段不存在的区间.
+	///
+	/// 本帧还没有分配过时返回 `None`.
+	pub(crate) fn last_pair_end(&self) -> Option<u32> {
+		self.used_ranges.last().map(|&(_, end)| end)
+	}
+
 	/// 返回本帧已记录的 pass 数量.
 	pub fn pass_count(&self) -> usize {
 		self.used_ranges.len()

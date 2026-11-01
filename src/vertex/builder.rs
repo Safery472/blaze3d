@@ -876,9 +876,19 @@ impl VertexConsumer for Building<'_> {
 	fn normal(&mut self, x: f32, y: f32, z: f32) -> Result<()> {
 		self.expect_element(ElementUsage::Normal, ElementType::Byte, 3)?;
 		// 先归一化到 `[-1, 1]` 区间, 再按 `i8` 存储.
+		//
+		// 第 4 个分量必须补 0: wgpu 侧是 `Snorm8x4`, 元素占 4 字节槽位
+		// (见 `VertexFormatElement::checked_byte_size`). 只写 3 字节会
+		// 让后续元素与下一个顶点都错位, 末尾单独写一次同样不行 ——
+		// `put_bytes` 的越界检查按 `byte_size` 判定. 补出的分量读作 0.0.
 		self.put_bytes(
 			0,
-			&[normal_int_value(x), normal_int_value(y), normal_int_value(z)],
+			&[
+				normal_int_value(x),
+				normal_int_value(y),
+				normal_int_value(z),
+				0,
+			],
 		);
 		self.advance()
 	}

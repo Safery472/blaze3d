@@ -82,7 +82,7 @@ pub mod prelude {
 	pub use crate::pipeline::{CubeFace, CubeShadowMap, RenderTarget, ShadowMap, Target};
 
 	pub use crate::post::{
-		ExtraInput, FullscreenQuad, NodeId, NodeInput, PostProcessChain,
+		ExtraInput, FullscreenQuad, InputBindings, NodeId, NodeInput, PostProcessChain,
 		PostProcessGraph, PostProcessInput, PostProcessPass,
 	};
 

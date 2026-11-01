@@ -44,20 +44,50 @@ use crate::system::error::{Error, Result};
 
 /// 单个对象的 `uniform` 数据.
 ///
-/// 目前只包含 `model` 矩阵. 将来要扩展材质参数, 颜色调整或光照因子
-/// 时, 直接往这里加字段即可 —— 但**必须保持 `Pod`** (无 `padding`,
-/// 无 `Drop`).
+/// # 字段与 WGSL 对应
+///
+/// | 字段         | 偏移 | 大小 | WGSL                    |
+/// |--------------|------|------|-------------------------|
+/// | `model`      | 0    | 64   | `mat4x4<f32>`           |
+/// | `bone_start` | 64   | 4    | `u32`                   |
+/// | `bone_count` | 68   | 4    | `u32`                   |
+/// | `_pad`       | 72   | 8    | `vec2<u32>`             |
+///
+/// 总大小 80 字节, 是 16 的倍数. **不要删除 `_pad`**: WGSL 里
+/// `mat4x4<f32>` 的 16 字节对齐会把后面的 `u32` 推到偏移 64, 但不带
+/// `_pad` 时 Rust 侧只有 72 字节, 两者对不上, 管线创建会因子结构的
+/// 最小绑定尺寸不足而失败.
+///
+/// # 扩展
+///
+/// 将来加材质参数, 颜色调整或光照因子时, 直接往这里加字段即可 —— 但
+/// **必须保持 `Pod`** (无 `padding`, 无 `Drop`), 并同步修改
+/// `shaders/*.wgsl` 里的 `struct Object`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct ObjectUniforms {
 	/// 从对象空间到世界空间的变换矩阵.
 	pub model: [[f32; 4]; 4],
+
+	/// 该对象使用的骨骼矩阵在 `BoneBuffer` 中的起始索引.
+	///
+	/// 非蒙皮对象填 0; `bone_count == 0` 时忽略.
+	pub bone_start: u32,
+
+	/// 该对象使用的骨骼数量; 取 0 表示不蒙皮.
+	pub bone_count: u32,
+
+	/// 显式补齐到 16 字节边界. 见类型文档的字段表.
+	pub _pad: [u32; 2],
 }
 
 impl Default for ObjectUniforms {
 	fn default() -> Self {
 		Self {
 			model: Mat4::IDENTITY.to_cols_array_2d(),
+			bone_start: 0,
+			bone_count: 0,
+			_pad: [0; 2],
 		}
 	}
 }
@@ -228,7 +258,36 @@ impl ObjectBuffer {
 	/// 返回字节偏移, 供 [`crate::system::PassHelper::set_object`] 使用.
 	/// 该偏移在帧内有效, 帧结束 (即 `render_frame` 完成) 后失效.
 	pub fn push(&mut self, queue: &wgpu::Queue, model: Mat4) -> Result<u32> {
-		self.push_uniforms(queue, ObjectUniforms { model: model.to_cols_array_2d() })
+		self.push_uniforms(
+			queue,
+			ObjectUniforms {
+				model: model.to_cols_array_2d(),
+				..ObjectUniforms::default()
+			},
+		)
+	}
+
+	/// 写入一个携带骨骼范围的对象.
+	///
+	/// 供蒙皮渲染使用: 着色器按 `bone_start` / `bone_count` 从
+	/// [`crate::system::BoneBuffer`] 里取骨骼矩阵. `bone_count` 为 0 时
+	/// 与 [`Self::push`] 等价.
+	pub fn push_skinned(
+		&mut self,
+		queue: &wgpu::Queue,
+		model: Mat4,
+		bone_start: u32,
+		bone_count: u32,
+	) -> Result<u32> {
+		self.push_uniforms(
+			queue,
+			ObjectUniforms {
+				model: model.to_cols_array_2d(),
+				bone_start,
+				bone_count,
+				..ObjectUniforms::default()
+			},
+		)
 	}
 
 	/// 写入一份完整的 [`ObjectUniforms`].

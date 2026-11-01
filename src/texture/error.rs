@@ -70,7 +70,9 @@ pub enum Error {
 	/// 典型的触发场景:
 	///
 	/// - MSAA 仅可用于 `D2`.
-	/// - Mipmap 生成目前只实现了 `D2`.
+	/// - 纹理是 MSAA 却请求生成 Mipmap.
+	/// - `D3` / `Cube` 的格式不支持 storage, 或 `D2` 的格式既不支持
+	///   storage 也不支持 render 回退路径.
 	#[error("texture kind {kind:?} is incompatible: {reason}")]
 	IncompatibleKind {
 		/// 触发该错误的纹理维度.
@@ -88,6 +90,12 @@ pub enum Error {
 		/// 触发该错误的纹理格式.
 		format: wgpu::TextureFormat,
 	},
+
+	/// 纹理的用法缺少上传所需的 `COPY_DST`.
+	///
+	/// 由 [`crate::texture::Texture::from_bytes`] 返回.
+	#[error("texture usage is missing COPY_DST, which data upload requires")]
+	MissingCopyDst,
 
 	/// 上传数据的大小与纹理尺寸不符.
 	///
@@ -127,6 +135,26 @@ pub enum Error {
 	UnsupportedSampleCount {
 		/// 调用方请求的采样数.
 		requested: u32,
+	},
+
+	/// 请求的 Mip 层数超出纹理实际拥有的层数.
+	///
+	/// 由 [`crate::texture::Texture::new`] 与
+	/// [`crate::texture::Texture::generate_mipmaps`] 返回.
+	///
+	/// # 上限
+	///
+	/// 尺寸 `W x H x D` 的纹理最多有 `floor(log2(max(W, H, D))) + 1` 层;
+	/// 1x1x1 的纹理只有 1 层.
+	///
+	/// **不要**把它与 `UnsupportedMipLevels` 混用: 后者说的是「`from_bytes`
+	/// 不上传多级数据」, 本变体说的是「纹理根本不存在这么多级」.
+	#[error("mip level count {requested} exceeds the texture's {available} mip level(s)")]
+	InvalidMipCount {
+		/// 调用方请求的层数.
+		requested: u32,
+		/// 纹理实际拥有的层数.
+		available: u32,
 	},
 
 	// ================ Mipmap 相关 ================

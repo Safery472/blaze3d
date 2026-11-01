@@ -341,6 +341,7 @@ impl Texture {
 	/// - 任一维尺寸为 0: [`Error::ZeroSize`].
 	/// - 尺寸越过设备上限: [`Error::SizeExceedsLimit`].
 	/// - 维度与参数不相容: [`Error::IncompatibleKind`].
+	/// - Mip 层数为 0 或超出尺寸允许的上限: [`Error::InvalidMipCount`].
 	pub fn new(device: &wgpu::Device, desc: &TextureDesc<'_>) -> Result<Self> {
 		validate_desc(device, desc)?;
 
@@ -381,10 +382,13 @@ impl Texture {
 	/// - 任一维尺寸为 0: [`Error::ZeroSize`].
 	/// - 尺寸越过设备上限: [`Error::SizeExceedsLimit`].
 	/// - 维度与参数不相容: [`Error::IncompatibleKind`].
-	/// - 格式无法从 CPU 上传: [`Error::UnsupportedFormat`].
+	/// - 格式无法从 CPU 上传 (压缩, 深度或模板格式):
+	///   [`Error::UnsupportedFormat`].
+	/// - `usage` 不含 `COPY_DST`: [`Error::MissingCopyDst`].
 	/// - 数据大小与纹理尺寸不符: [`Error::DataSizeMismatch`].
 	/// - 请求了多级 Mip: [`Error::UnsupportedMipLevels`].
 	/// - 请求了 MSAA 采样: [`Error::UnsupportedSampleCount`].
+	/// - Mip 层数为 0 或超出尺寸允许的上限: [`Error::InvalidMipCount`].
 	pub fn from_bytes(
 		device: &wgpu::Device,
 		queue: &wgpu::Queue,
@@ -392,6 +396,27 @@ impl Texture {
 		data: &[u8],
 	) -> Result<Self> {
 		validate_desc(device, desc)?;
+
+		// 深度 / 模板纹理不能通过 `write_texture` 上传 —— 它的 aspect 无法
+		// 用 `TextureAspect::All` 完整覆盖, wgpu 在 `Queue::write_texture`
+		// 时报验证错误. `block_copy_size` 对 `Depth32Float` 有返回值, 因此
+		// **不要**只靠它判断可上传性.
+		if desc.format.is_depth_stencil_format() {
+			return Err(Error::UnsupportedFormat { format: desc.format });
+		}
+
+		// 压缩格式的块尺寸不是 1x1: `block_copy_size` 是「每块字节数」而不是
+		// 「每像素字节数」, 按像素计算会得到错误的期望大小. 上传压缩数据
+		// 需要按块尺寸计算行 stride, 本函数尚未实现.
+		if desc.format.block_dimensions() != (1, 1) {
+			return Err(Error::UnsupportedFormat { format: desc.format });
+		}
+
+		// 缺少 `COPY_DST` 时 `write_texture` 会触发 wgpu 验证错误; 在入口
+		// 拦下, 调用方才能从返回值得知原因.
+		if !desc.usage.contains(wgpu::TextureUsages::COPY_DST) {
+			return Err(Error::MissingCopyDst);
+		}
 
 		if desc.mip_level_count != 1 {
 			return Err(Error::UnsupportedMipLevels {
@@ -413,6 +438,7 @@ impl Texture {
 			.ok_or(Error::UnsupportedFormat { format: desc.format })?;
 
 		// 期望的字节数 = 宽 * 高 * 层数 * 每像素字节数.
+		// 到了这里格式已确定未压缩, 块尺寸恒为 1x1, 因此两者等价.
 		let expected = desc.width as u64
 			* desc.height as u64
 			* desc.layers() as u64
@@ -529,6 +555,7 @@ impl Texture {
 /// - 各维尺寸不得超出设备对应维度的上限.
 /// - MSAA 只能配 `D2`.
 /// - `Cube` 的宽高必须相等.
+/// - `mip_level_count` 落在 `1..=max_mip_levels(desc)` 内.
 fn validate_desc(device: &wgpu::Device, desc: &TextureDesc<'_>) -> Result<()> {
 	if desc.width == 0 || desc.height == 0 {
 		return Err(Error::ZeroSize {
@@ -586,7 +613,43 @@ fn validate_desc(device: &wgpu::Device, desc: &TextureDesc<'_>) -> Result<()> {
 		});
 	}
 
+	// Mip 层数上限由最大维度决定: 每次降采样最多减半, 减到 1 为止.
+	// **不要**只校验非零: 超出一层就会让 wgpu 在 create_texture 时报
+	// 验证错误, 而那时已经拿不到调用方的上下文.
+	let max_mips = max_mip_levels(desc);
+	if desc.mip_level_count == 0 || desc.mip_level_count > max_mips {
+		return Err(Error::InvalidMipCount {
+			requested: desc.mip_level_count,
+			available: max_mips,
+		});
+	}
+
 	Ok(())
+}
+
+/// 供测试使用的 Mip 层数上限计算.
+///
+/// 公开只是为了让集成测试能断言推导规则; 不属于稳定 API, 不要在生产
+/// 代码里调用.
+#[doc(hidden)]
+pub fn max_mip_levels_for_test(desc: &TextureDesc<'_>) -> u32 {
+	max_mip_levels(desc)
+}
+
+/// 按尺寸推导一张纹理最多能有几级 Mip.
+///
+/// 最大维度为 `m` 时, 层数等于 `floor(log2(m)) + 1`; 每一级至少 1 像素,
+/// 因此 `m == 1` (例如 1x1 的纹理或 1 层的 D3) 只有 1 级.
+fn max_mip_levels(desc: &TextureDesc<'_>) -> u32 {
+	let max_dim = desc
+		.width
+		.max(desc.height)
+		.max(if desc.kind == TextureKind::D3 { desc.depth } else { 1 });
+	// `leading_zeros` 给出 32 位二进制的前导零个数, `u32::BITS` 与它之差
+	// 即 `bit_length(max_dim)`, 也就是 `floor(log2(max_dim)) + 1` ——
+	// 层数本身. 对 0 输入这个减法也不会下溢, 但 `validate_desc` 已在
+	// 之前拒绝零尺寸.
+	u32::BITS - max_dim.leading_zeros()
 }
 
 /// 按 kind 生成默认视图.

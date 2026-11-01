@@ -66,6 +66,7 @@ pub mod msaa;
 pub mod readback;
 pub mod shadow;
 pub mod cube;
+mod transform;
 pub mod surface;
 pub mod target;
 
@@ -76,6 +77,9 @@ pub use error::{Error, Result};
 pub use msaa::MsaaBuffer;
 pub use readback::{read_buffer, read_target, read_texture};
 pub use shadow::ShadowMap;
-pub use cube::{CubeFace, CubeShadowMap};
-pub use surface::{DEFAULT_SURFACE_CLEAR_COLOR, SurfaceFrame, configure_surface, reconfigure_surface};
+pub use cube::{CubeFace, CubeFaceTarget, CubeShadowMap};
+pub use surface::{
+	configure_surface, reconfigure_surface, set_present_mode, SurfaceFrame,
+	DEFAULT_SURFACE_CLEAR_COLOR,
+};
 pub use target::{clamp_to_limits, RenderTarget, Target, DEFAULT_HEIGHT, DEFAULT_WIDTH};

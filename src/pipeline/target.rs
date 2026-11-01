@@ -40,8 +40,15 @@ use crate::state::{ColorFormat, DepthFormat};
 /// - [`RenderTarget`] —— 离屏目标, 持有长期纹理.
 /// - [`crate::pipeline::SurfaceFrame`] —— 窗口表面, 纹理每帧变化.
 pub trait Target {
-	/// 本次渲染使用的颜色附件.
-	fn color_attachment(&self) -> wgpu::RenderPassColorAttachment<'_>;
+	/// 本次渲染使用的颜色附件; `None` 表示本次 pass 不写颜色.
+	///
+	/// # 为什么是 `Option`
+	///
+	/// 纯深度目标 (例如立方体阴影贴图的单个面) 只需要深度附件. 早先的
+	/// 签名要求必须给一个颜色附件, 于是 `ShadowMap` 只能挂一个随即丢弃
+	/// 的 dummy 颜色纹理. 改成 `Option` 后这类目标不产生任何颜色开销,
+	/// `Frame::pass` 会构造不含颜色附件的 render pass.
+	fn color_attachment(&self) -> Option<wgpu::RenderPassColorAttachment<'_>>;
 
 	/// 深度附件; 返回 `None` 表示没有深度.
 	fn depth_attachment(&self) -> Option<wgpu::RenderPassDepthStencilAttachment<'_>>;
@@ -317,7 +324,7 @@ impl Target for RenderTarget {
 	///
 	/// 启用 MSAA 时以 MSAA 视图为主附件, `color_view` (解析目标) 作
 	/// `resolve_target`.
-	fn color_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
+	fn color_attachment(&self) -> Option<wgpu::RenderPassColorAttachment<'_>> {
 		let ops = wgpu::Operations {
 			load: wgpu::LoadOp::Clear(wgpu::Color {
 				r: self.clear_color[0] as f64,
@@ -328,7 +335,7 @@ impl Target for RenderTarget {
 			store: wgpu::StoreOp::Store,
 		};
 
-		if let Some(msaa_view) = &self.msaa_color_view {
+		Some(if let Some(msaa_view) = &self.msaa_color_view {
 			wgpu::RenderPassColorAttachment {
 				view: msaa_view,
 				resolve_target: Some(&self.color_view),
@@ -342,7 +349,7 @@ impl Target for RenderTarget {
 				depth_slice: None,
 				ops,
 			}
-		}
+		})
 	}
 
 	fn depth_attachment(&self) -> Option<wgpu::RenderPassDepthStencilAttachment<'_>> {

@@ -46,8 +46,10 @@
 //! - **group 2+** —— 用户自定义, 在 pass 回调里手动绑定.
 //!
 //! 输入纹理的 bind group layout 在构造时由 `input_layout` 参数提供,
-//! 它定义 group 1 的布局 (通常是 binding 0 = texture, binding 1 =
-//! sampler).
+//! 它定义 group 1 的布局. 本模块重建中间输入的 bind group 时, 需要知道
+//! texture 与 sampler 分别落在哪个 binding —— 由
+//! [`InputBindings`] 给出, 默认是 `0` / `1`. **不要**把 binding 写死:
+//! layout 里把 texture 放在别的 binding 时, 重建 bind group 会创建失败.
 //!
 //! # 与 `RenderSystem` 的关系
 //!
@@ -108,6 +110,47 @@ pub struct PostProcessPass {
 	pub input: PostProcessInput,
 }
 
+// ================ 输入 binding ================
+
+/// 输入纹理的两个 binding 编号.
+///
+/// 后处理 pass 的 group 1 至少包含一张纹理与一个采样器, 但它们的
+/// binding 编号由调用方的 `input_layout` 决定. 本结构把编号显式化,
+/// 避免本模块按固定的 `0` / `1` 重建 bind group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputBindings {
+	/// texture 的 binding 编号.
+	pub texture: u32,
+	/// sampler 的 binding 编号.
+	pub sampler: u32,
+}
+
+impl Default for InputBindings {
+	/// 默认 `texture = 0`, `sampler = 1` —— 与模块文档里的惯用排布一致.
+	fn default() -> Self {
+		Self {
+			texture: 0,
+			sampler: 1,
+		}
+	}
+}
+
+impl InputBindings {
+	/// 用给定编号构造; 两者必须不同.
+	///
+	/// # 错误
+	///
+	/// `texture == sampler` 时返回 `None` —— 同一个 binding 不能同时是
+	/// 纹理与采样器.
+	pub const fn new(texture: u32, sampler: u32) -> Option<Self> {
+		if texture == sampler {
+			None
+		} else {
+			Some(Self { texture, sampler })
+		}
+	}
+}
+
 // ================ 链 ================
 
 /// 后处理链.
@@ -131,6 +174,9 @@ pub struct PostProcessChain {
 	/// 定义 group 1 的布局. 每个 pass 的 `layout` 中 group 1 必须与
 	/// 之一致 —— 否则绘制时 wgpu 会 panic.
 	input_layout: wgpu::BindGroupLayout,
+
+	/// texture / sampler 在 `input_layout` 中的 binding 编号.
+	input_bindings: InputBindings,
 
 	/// 输入采样器.
 	///
@@ -178,10 +224,32 @@ impl PostProcessChain {
 			quad,
 			passes: Vec::new(),
 			input_layout,
+			input_bindings: InputBindings::default(),
 			sampler: sampler.clone(),
 			pool: IntermediatePool::new(),
 			slot_bind_groups: Vec::new(),
 		}
+	}
+
+	/// 覆盖输入 texture / sampler 的 binding 编号.
+	///
+	/// # 用途
+	///
+	/// `input_layout` 不是 `0 = texture, 1 = sampler` 的排布时必须调用
+	/// 本方法. 默认与 [`InputBindings::default`] 一致.
+	///
+	/// # 注意
+	///
+	/// 只影响本模块为**中间输入**重建的 bind group; `External` 输入的
+	/// bind group 由调用方自行创建.
+	pub fn with_input_bindings(mut self, bindings: InputBindings) -> Self {
+		self.input_bindings = bindings;
+		self
+	}
+
+	/// 当前的输入 binding 编号.
+	pub fn input_bindings(&self) -> InputBindings {
+		self.input_bindings
 	}
 
 	/// 添加一个 pass.
@@ -365,13 +433,13 @@ impl PostProcessChain {
 				layout: &self.input_layout,
 				entries: &[
 					wgpu::BindGroupEntry {
-						binding: 0,
+						binding: self.input_bindings.texture,
 						resource: wgpu::BindingResource::TextureView(
 							&target.color_view,
 						),
 					},
 					wgpu::BindGroupEntry {
-						binding: 1,
+						binding: self.input_bindings.sampler,
 						resource: wgpu::BindingResource::Sampler(&self.sampler),
 					},
 				],

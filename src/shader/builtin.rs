@@ -43,6 +43,9 @@
 //! | [`BuiltinShader::PositionColorSkinned`] | `position_color_skinned` | instances | bones | 蒙皮 |
 //! | [`BuiltinShader::PositionTex`] | `position_tex` | `Object` | texture | 纹理与雾 |
 //! | [`BuiltinShader::PostCopy`] | `position_tex` | texture | — | 直通复制 (占位) |
+//! | [`BuiltinShader::ShadowDepthMesh`] | `position_only` | `Object` | — | 阴影深度 (普通网格) |
+//! | [`BuiltinShader::ShadowDepthSkinned`] | `position_color_skinned` | `Object` | bones | 阴影深度 (蒙皮) |
+//! | [`BuiltinShader::ShadowDepthInstanced`] | `position_only` | instances | — | 阴影深度 (实例化) |
 
 use super::Shader;
 
@@ -101,16 +104,59 @@ pub enum BuiltinShader {
 	///
 	/// 顶点格式为 `position_tex`, 供后处理链 / 图使用.
 	PostCopy,
+
+	/// 阴影深度 pass, 普通网格: 只需要顶点位置.
+	///
+	/// # Bind group
+	///
+	/// - group 0: `Globals` (`view_projection` 替换为光源视角的矩阵).
+	/// - group 1: `Object` (`model`), 动态偏移选对象.
+	///
+	/// # 顶点格式
+	///
+	/// `position_only`. 配合 [`crate::system::PassHelper::draw_mesh`] 使用,
+	/// 管线**必须**设成 `WriteMask::DEPTH_ONLY`.
+	ShadowDepthMesh,
+
+	/// 阴影深度 pass, 蒙皮网格.
+	///
+	/// # Bind group
+	///
+	/// - group 0: `Globals`.
+	/// - group 1: `Object` (model 与骨骼范围).
+	/// - group 2: `bones` (`array<mat4x4<f32>>`).
+	///
+	/// # 顶点格式
+	///
+	/// `position_color_skinned` 去掉颜色: 实际只读 `@location(0)` /
+	/// `(2)` / `(3)`. 使用 `position_color_skinned` 时颜色属性会被忽略.
+	ShadowDepthSkinned,
+
+	/// 阴影深度 pass, 实例化网格 (内置的原始版本).
+	///
+	/// # Bind group
+	///
+	/// - group 0: `Globals`.
+	/// - group 1: `instances` (`array<Instance>`, storage read).
+	///
+	/// # 顶点格式
+	///
+	/// `position_only`. 配合
+	/// [`crate::system::PassHelper::draw_mesh_instanced`] 使用.
+	ShadowDepthInstanced,
 }
 
 impl BuiltinShader {
 	/// 全部内置着色器构成的数组.
-	pub const ALL: [BuiltinShader; 5] = [
+	pub const ALL: [BuiltinShader; 8] = [
 		BuiltinShader::PositionColor,
 		BuiltinShader::PositionColorInstanced,
 		BuiltinShader::PositionColorSkinned,
 		BuiltinShader::PositionTex,
 		BuiltinShader::PostCopy,
+		BuiltinShader::ShadowDepthMesh,
+		BuiltinShader::ShadowDepthSkinned,
+		BuiltinShader::ShadowDepthInstanced,
 	];
 
 	/// 固定的管线缓存 `id`.
@@ -123,6 +169,9 @@ impl BuiltinShader {
 			BuiltinShader::PositionColorSkinned => ID_BASE + 2,
 			BuiltinShader::PositionTex => ID_BASE + 3,
 			BuiltinShader::PostCopy => ID_BASE + 4,
+			BuiltinShader::ShadowDepthMesh => ID_BASE + 5,
+			BuiltinShader::ShadowDepthSkinned => ID_BASE + 6,
+			BuiltinShader::ShadowDepthInstanced => ID_BASE + 7,
 		}
 	}
 
@@ -134,6 +183,9 @@ impl BuiltinShader {
 			BuiltinShader::PositionColorSkinned => "builtin_position_color_skinned",
 			BuiltinShader::PositionTex => "builtin_position_tex",
 			BuiltinShader::PostCopy => "builtin_post_copy",
+			BuiltinShader::ShadowDepthMesh => "builtin_shadow_depth_mesh",
+			BuiltinShader::ShadowDepthSkinned => "builtin_shadow_depth_skinned",
+			BuiltinShader::ShadowDepthInstanced => "builtin_shadow_depth_instanced",
 		}
 	}
 
@@ -154,6 +206,15 @@ impl BuiltinShader {
 			}
 			BuiltinShader::PostCopy => {
 				include_str!("../../shaders/post_copy.min.wgsl")
+			}
+			BuiltinShader::ShadowDepthMesh => {
+				include_str!("../../shaders/shadow_depth_mesh.min.wgsl")
+			}
+			BuiltinShader::ShadowDepthSkinned => {
+				include_str!("../../shaders/shadow_depth_skinned.min.wgsl")
+			}
+			BuiltinShader::ShadowDepthInstanced => {
+				include_str!("../../shaders/shadow_depth.min.wgsl")
 			}
 		}
 	}
@@ -189,6 +250,9 @@ impl BuiltinShader {
 			BuiltinShader::PositionColorSkinned => 3,
 			BuiltinShader::PositionTex => 3,
 			BuiltinShader::PostCopy => 2,
+			BuiltinShader::ShadowDepthMesh
+			| BuiltinShader::ShadowDepthInstanced => 2,
+			BuiltinShader::ShadowDepthSkinned => 3,
 		}
 	}
 
@@ -204,6 +268,11 @@ impl BuiltinShader {
 			BuiltinShader::PositionColorSkinned => 4,
 			// position 与 uv.
 			BuiltinShader::PositionTex | BuiltinShader::PostCopy => 2,
+			// 阴影只需要位置.
+			BuiltinShader::ShadowDepthMesh
+			| BuiltinShader::ShadowDepthInstanced => 1,
+			// position, bone_index, bone_weight.
+			BuiltinShader::ShadowDepthSkinned => 3,
 		}
 	}
 }

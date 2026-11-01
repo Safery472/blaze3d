@@ -349,6 +349,7 @@ impl BoneTrack {
 	///
 	/// - `times` 与 `transforms` 长度不一致 ——
 	///   [`Error::TrackLengthMismatch`].
+	/// - 任一关键帧时间不是有限非负数 —— [`Error::TrackInvalidTime`].
 	/// - `times` 不是严格升序 —— [`Error::TrackNotMonotonic`].
 	pub fn new(bone: usize, times: Vec<f32>, transforms: Vec<BoneTransform>) -> Result<Self> {
 		if times.len() != transforms.len() {
@@ -356,6 +357,11 @@ impl BoneTrack {
 				times: times.len(),
 				transforms: transforms.len(),
 			});
+		}
+		// NaN 与任何值比较都是 `false`, **不要**只靠下面的严格升序检查.
+		// 放行 NaN 会让 `sample` 的二分查找得到 0, 随后 `next - 1` 下溢.
+		if times.iter().any(|t| !(t.is_finite() && *t >= 0.0)) {
+			return Err(Error::TrackInvalidTime { bone });
 		}
 		if times.windows(2).any(|w| w[1] <= w[0]) {
 			return Err(Error::TrackNotMonotonic { bone });
@@ -394,8 +400,15 @@ impl BoneTrack {
 		}
 
 		// 二分查找第一个大于 time 的索引.
+		//
+		// `time` 已落在 `(times[0], times[last])` 区间内, 加上构造阶段
+		// 拒绝 NaN, 结果必然在 `1..last`. 这里仍用 checked 写法: 字段
+		// 是公开的, 调用方可以绕过 `new` 直接构造出畸形轨道, 采样不应
+		// 因此 panic.
 		let next = self.times.partition_point(|&t| t <= time);
-		let prev = next - 1;
+		let Some(prev) = next.checked_sub(1) else {
+			return Some(self.transforms[0]);
+		};
 
 		let t0 = self.times[prev];
 		let t1 = self.times[next];

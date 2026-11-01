@@ -215,6 +215,10 @@ impl VertexFormatElement {
 	}
 
 	/// `Normal` 用途, `Byte x3`, 归一化到 `[-1, 1]`.
+	///
+	/// 写入时只有 3 个分量, 但在缓冲中**占 4 字节** —— wgpu 侧是
+	/// `Snorm8x4`, 第 4 个分量不用. 格式末尾不必再补 `Padding`, 但若
+	/// 按 3 字节去算偏移, 之后的所有元素都会错位.
 	pub const fn normal_i8x3() -> Self {
 		Self { elem_type: ElementType::Byte, usage: ElementUsage::Normal, index: 0, count: 3 }
 	}
@@ -222,6 +226,24 @@ impl VertexFormatElement {
 	/// `Padding` 用途, `UByte x1`; 不映射到 wgpu 属性.
 	pub const fn padding_u8x1() -> Self {
 		Self { elem_type: ElementType::UByte, usage: ElementUsage::Padding, index: 0, count: 1 }
+	}
+
+	/// `Padding` 用途, `UByte x4`; 不映射到 wgpu 属性, 占 4 字节.
+	///
+	/// # 用途
+	///
+	/// 把不以 4 字节结尾的格式补齐到 [`wgpu::VERTEX_ALIGNMENT`]. 典型场景
+	/// 是 [`crate::vertex::formats::block`] 与 `new_entity`: 两者的元素
+	/// 去掉 `Padding` 后止于 32 与 36, 补 4 字节后 stride 落在 36 与 40.
+	///
+	/// 4 字节也是能通过对齐校验的最小取值 —— 1 到 3 字节都会让
+	/// [`crate::vertex::format::VertexFormat::new`] 返回
+	/// [`Error::StrideMisaligned`].
+	///
+	/// **不要**把它当作 `(Normal, Byte, 3)` 的补齐项: 法线在 wgpu 侧是
+	/// `Snorm8x4`, 自己就占 4 字节槽位, 不需要再补.
+	pub const fn padding_u8x4() -> Self {
+		Self { elem_type: ElementType::UByte, usage: ElementUsage::Padding, index: 0, count: 4 }
 	}
 
 	/// `UV` 用途, 层号 0, `Float x2`.
@@ -303,9 +325,54 @@ impl VertexFormatElement {
 		}
 	}
 
-	/// 元素占用的字节数, 等于 `elem_type.size() * count`.
+	/// 元素在顶点缓冲中实际占用的字节数.
+	///
+	/// # 算法
+	///
+	/// - 普通元素: `elem_type.size() * count`.
+	/// - `(Normal, Byte, 3)`: 4 字节. wgpu 映射到 `Snorm8x4`, 即 4 个
+	///   分量的槽位; 第 4 个分量不参与运算, 但 stride 必须按 4 字节计.
+	///
+	/// # 为什么不是简单的 `size() * count`
+	///
+	/// wgpu 的顶点缓冲要求 stride 是 [`wgpu::VERTEX_ALIGNMENT`] (4 字节) 的
+	/// 倍数, 而 `Snorm8x4` 就占 4 字节. 若这里报 3, 紧随其后的元素偏移
+	/// 只有 3, 自定义格式会撞上 stride 不是 4 的倍数 —— 之前只能靠格式
+	/// 末尾补一个 `Padding` 绕开.
+	///
+	/// # 溢出
+	///
+	/// `count` 可以取到 `u32::MAX`, 字节数因此可能超出 `u32`. 超出时
+	/// 返回 `None`, 由 [`super::format::VertexFormat::new`] 转成
+	/// [`Error::StrideOverflow`] —— 这里**不要**用普通乘法返回回绕后的
+	/// 值, 那会让超大 `Padding` 静默通过构造校验.
+	pub const fn checked_byte_size(self) -> Option<u32> {
+		let size = if matches!(
+			(self.usage, self.elem_type, self.count),
+			(ElementUsage::Normal, ElementType::Byte, 3)
+		) {
+			4
+		} else {
+			match self.elem_type.size().checked_mul(self.count) {
+				Some(size) => size,
+				None => return None,
+			}
+		};
+		Some(size)
+	}
+
+	/// 元素占用的字节数, 等于 [`Self::checked_byte_size`] 的结果.
+	///
+	/// # Panics
+	///
+	/// 元素字节数超出 `u32` 时 panic. 这类元素无法通过
+	/// [`super::format::VertexFormat::new`] 进入合法格式, 因此只在直接
+	/// 使用单个元素时才会遇到.
 	pub const fn byte_size(self) -> u32 {
-		self.elem_type.size() * self.count
+		match self.checked_byte_size() {
+			Some(size) => size,
+			None => panic!("element byte size overflows u32"),
+		}
 	}
 
 	/// 判断是否属于 `Position` 用途.
@@ -330,21 +397,25 @@ impl VertexFormatElement {
 	///
 	/// # 支持的组合
 	///
-	/// | 用途         | 类型     | 分量 | wgpu 格式     |
-	/// |--------------|----------|------|---------------|
-	/// | `Position`   | `Float`  | 2    | `Float32x2`   |
-	/// | `Position`   | `Float`  | 3    | `Float32x3`   |
-	/// | `Position`   | `Float`  | 4    | `Float32x4`   |
-	/// | `Color`      | `UByte`  | 4    | `Unorm8x4`    |
-	/// | `Color`      | `Float`  | 4    | `Float32x4`   |
-	/// | `UV`         | `Float`  | 2    | `Float32x2`   |
-	/// | `UV`         | `Short`  | 2    | `Sint16x2`    |
-	/// | `UV`         | `UShort` | 2    | `Uint16x2`    |
-	/// | `Normal`     | `Byte`   | 3    | `Snorm8x4`    |
-	/// | `Normal`     | `Float`  | 3    | `Float32x3`   |
-	/// | `BoneIndex`  | `UByte`  | 4    | `Uint8x4`     |
-	/// | `BoneWeight` | `UByte`  | 4    | `Unorm8x4`    |
-	/// | `Padding`    | 任意     | 任意 | `None`        |
+	/// | 用途         | 类型     | 分量 | wgpu 格式   | 占用字节 |
+	/// |--------------|----------|------|-------------|----------|
+	/// | `Position`   | `Float`  | 2    | `Float32x2` | 8        |
+	/// | `Position`   | `Float`  | 3    | `Float32x3` | 12       |
+	/// | `Position`   | `Float`  | 4    | `Float32x4` | 16       |
+	/// | `Color`      | `UByte`  | 4    | `Unorm8x4`  | 4        |
+	/// | `Color`      | `Float`  | 4    | `Float32x4` | 16       |
+	/// | `UV`         | `Float`  | 2    | `Float32x2` | 8        |
+	/// | `UV`         | `Short`  | 2    | `Sint16x2`  | 4        |
+	/// | `UV`         | `UShort` | 2    | `Uint16x2`  | 4        |
+	/// | `Normal`     | `Byte`   | 3    | `Snorm8x4`  | 4        |
+	/// | `Normal`     | `Float`  | 3    | `Float32x3` | 12       |
+	/// | `BoneIndex`  | `UByte`  | 4    | `Uint8x4`   | 4        |
+	/// | `BoneWeight` | `UByte`  | 4    | `Unorm8x4`  | 4        |
+	/// | `Padding`    | 任意     | 任意 | `None`      | 见下     |
+	///
+	/// `Normal` 的写入只有 3 个分量, 但 wgpu 侧是 4 分量格式, 缓冲里
+	/// 占 4 字节 —— 写入时第 4 个字节补 0. `Padding` 的字节数由
+	/// [`Self::checked_byte_size`] 的普通规则给出.
 	pub fn wgpu_format(self) -> Result<Option<wgpu::VertexFormat>> {
 		use wgpu::VertexFormat as VF;
 		use ElementType as T;

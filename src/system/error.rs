@@ -128,6 +128,24 @@ pub enum Error {
 		/// 该骨骼的索引.
 		bone: usize,
 	},
+
+	/// 动画轨道的关键帧时间不是有限值.
+	///
+	/// 由 [`crate::system::BoneTrack::new`] 返回. 时间戳必须是有限的
+	/// 非负数 —— 动画时长与采样时刻都以秒为单位, 负时间没有意义;
+	/// NaN 与无穷则会让升序判定失效.
+	///
+	/// # 为什么单独成一个变体
+	///
+	/// NaN 与任何值比较都为 `false`, 所以 `[NaN, 1.0]` 能通过严格升序
+	/// 检查. 若放行, 采样时的二分查找会得到 `0`, 再减 1 即下溢
+	/// (debug 下 panic, release 下越界). 畸形动画文件因此可以触发
+	/// 崩溃, 必须在构造阶段拦下.
+	#[error("bone {bone} track has a non-finite or negative keyframe time")]
+	TrackInvalidTime {
+		/// 该骨骼的索引.
+		bone: usize,
+	},
 }
 
 /// `system` 模块通用的 `Result` 别名.

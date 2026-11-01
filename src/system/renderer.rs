@@ -354,6 +354,20 @@ impl RenderSystem {
 		self.object_buffer.push(&self.queue, model)
 	}
 
+	/// 上传一个携带骨骼范围的对象, 返回它的 dynamic offset.
+	///
+	/// 供蒙皮着色器使用: `bone_start` / `bone_count` 随 `model` 一起
+	/// 写进 group 1 的 Object uniform.
+	pub fn push_object_skinned(
+		&mut self,
+		model: glam::Mat4,
+		bone_start: u32,
+		bone_count: u32,
+	) -> Result<u32> {
+		self.object_buffer
+			.push_skinned(&self.queue, model, bone_start, bone_count)
+	}
+
 	// ================ 帧的开始与提交 ================
 
 	/// 开启新的一帧.
@@ -431,24 +445,24 @@ impl<'a> Frame<'a> {
 		T: Target,
 		F: FnOnce(&mut PassHelper<'_, '_>) -> R,
 	{
-		// 时间线启用时先占一对 timestamp 索引.
-		let pair = self
-			.system
-			.timeline
-			.as_mut()
-			.and_then(|t| t.allocate_pair());
-
-		// 写入起始时间戳.
-		if let Some((begin, _)) = pair {
-			let query_set = &self.system.timeline.as_ref().unwrap().query_set;
-			self.encoder.write_timestamp(query_set, begin);
-		}
+		// 时间线启用时先占一对 timestamp 索引, 并写入起始时间戳.
+		self.write_pass_begin_timestamp();
 
 		// 记录 pass 本身.
+		//
+		// 目标的颜色附件可能是 `None` —— 纯深度目标 (例如立方体阴影的
+		// 单个面) 只需要深度. 这种情况传空切片, wgpu 允许没有颜色附件的
+		// render pass.
+		let mut color_attachment = target.color_attachment();
+		let color_attachments: &[Option<wgpu::RenderPassColorAttachment<'_>>] =
+			match color_attachment.is_some() {
+				true => &[color_attachment.take()],
+				false => &[],
+			};
 		let result = {
 			let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 				label: Some("blaze3d_pass"),
-				color_attachments: &[Some(target.color_attachment())],
+				color_attachments,
 				depth_stencil_attachment: target.depth_attachment(),
 				timestamp_writes: None,
 				occlusion_query_set: None,
@@ -479,12 +493,39 @@ impl<'a> Frame<'a> {
 		};
 
 		// 写入结束时间戳.
-		if let Some((_, end)) = pair {
-			let query_set = &self.system.timeline.as_ref().unwrap().query_set;
-			self.encoder.write_timestamp(query_set, end);
-		}
+		self.write_pass_end_timestamp();
 
 		result
+	}
+
+	/// 为该帧的 pass 分配一对 `timestamp` 并写入起始时间.
+	///
+	/// # 配对
+	///
+	/// 记录完 pass 后**必须**调用 [`Self::write_pass_end_timestamp`]. 后者
+	/// 取回本次分配的 `end` 索引, 不重新分配 —— 漏掉不会越界, 只是该
+	/// pass 的耗时读数无意义.
+	fn write_pass_begin_timestamp(&mut self) {
+		// 借用到 `timeline` 为止; `query_set` 是 `wgpu` 句柄, 可以随
+		// 元组一起带出, 不必在 `write_timestamp` 处再展开一次 `unwrap`.
+		let Some((query_set, begin)) = self.system.timeline.as_mut().and_then(|timeline| {
+			let (begin, _) = timeline.allocate_pair()?;
+			Some((timeline.query_set.clone(), begin))
+		}) else {
+			return;
+		};
+		self.encoder.write_timestamp(&query_set, begin);
+	}
+
+	/// 写入本帧最后一次分配到的结束时间戳.
+	fn write_pass_end_timestamp(&mut self) {
+		let Some((query_set, end)) = self.system.timeline.as_ref().and_then(|timeline| {
+			let end = timeline.last_pair_end()?;
+			Some((timeline.query_set.clone(), end))
+		}) else {
+			return;
+		};
+		self.encoder.write_timestamp(&query_set, end);
 	}
 
 	/// 在帧内记录一个计算 pass.
@@ -496,16 +537,7 @@ impl<'a> Frame<'a> {
 	where
 		F: FnOnce(&mut ComputePassHelper<'_, '_>),
 	{
-		let pair = self
-			.system
-			.timeline
-			.as_mut()
-			.and_then(|t| t.allocate_pair());
-
-		if let Some((begin, _)) = pair {
-			let query_set = &self.system.timeline.as_ref().unwrap().query_set;
-			self.encoder.write_timestamp(query_set, begin);
-		}
+		self.write_pass_begin_timestamp();
 
 		{
 			let mut pass = self.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -524,10 +556,7 @@ impl<'a> Frame<'a> {
 			f(&mut helper);
 		}
 
-		if let Some((_, end)) = pair {
-			let query_set = &self.system.timeline.as_ref().unwrap().query_set;
-			self.encoder.write_timestamp(query_set, end);
-		}
+		self.write_pass_end_timestamp();
 	}
 
 	/// 把单个对象的 model 矩阵写入对象缓冲, 返回 dynamic offset.

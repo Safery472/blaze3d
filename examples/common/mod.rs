@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use blaze3d::camera::PerspectiveCamera;
 use blaze3d::pipeline::{
-	configure_surface, DepthBuffer, Error as PipelineError, MsaaBuffer, SurfaceFrame,
-	DEFAULT_SURFACE_CLEAR_COLOR,
+	DepthBuffer, Error as PipelineError, MsaaBuffer, SurfaceFrame, configure_surface,
+	set_present_mode, DEFAULT_SURFACE_CLEAR_COLOR,
 };
 use blaze3d::prelude::*;
 use blaze3d::system::{RenderSystem, RenderSystemDescriptor};
@@ -117,7 +117,15 @@ impl Gfx {
 
 		let mut config = configure_surface(&surface, &adapter, &device, width, height)
 			.expect("failed to configure surface");
-		config.present_mode = wgpu::PresentMode::Fifo;
+		// 只改字段不会生效, 必须重新配置表面; 设备不支持 Fifo 时退回能力
+		// 列表里的第一个模式.
+		set_present_mode(
+			&surface,
+			&adapter,
+			&device,
+			&mut config,
+			wgpu::PresentMode::Fifo,
+		);
 
 		let window_format = ColorFormat::from_wgpu(config.format)
 			.expect("surface format not supported");

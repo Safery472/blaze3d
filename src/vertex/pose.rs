@@ -122,8 +122,7 @@ impl PoseStack {
 	/// 新元素持有 `pose` 与 `normal` 的独立副本, 改动它不会波及原来的
 	/// 栈顶.
 	pub fn push(&mut self) {
-		// 不变量: 栈非空. 该不变量由 `new` 建立, `pop` 也不会把栈删到空.
-		let top = *self.stack.last().expect("stack is never empty");
+		let top = self.top_or_identity();
 		self.stack.push(top);
 	}
 
@@ -172,7 +171,7 @@ impl PoseStack {
 
 	/// 返回栈顶的矩阵对.
 	pub fn last(&self) -> Pose {
-		*self.stack.last().expect("stack is never empty")
+		self.top_or_identity()
 	}
 
 	/// 返回栈顶的 `pose` 矩阵.
@@ -201,6 +200,31 @@ impl PoseStack {
 		self.stack.push(Pose::identity());
 	}
 
+	/// 栈顶矩阵对的只读引用; 栈意外为空时退回单位变换.
+	///
+	/// # 为什么不 panic
+	///
+	/// `new` 总会压入栈底, `pop` 也不会把它弹出 —— 栈非空是构造期建立
+	/// 的不变量. 但这里**不**用 `expect` 去「证明」它: 一旦将来某处
+	/// 违反, 渲染线程直接 panic 比返回单位变换更难排查. 退回单位变换
+	/// 的代价只是这一帧少了变换, 不会影响其他绘制.
+	fn top_or_identity(&self) -> Pose {
+		self.stack.last().copied().unwrap_or(Pose::identity())
+	}
+
+	/// 栈顶矩阵对的可变引用; 栈意外为空时先补一个单位元素.
+	///
+	/// 与 [`Self::top_or_identity`] 同一思路: 恢复不变量后再继续,
+	/// 不 panic.
+	fn top_mut(&mut self) -> &mut Pose {
+		if self.stack.is_empty() {
+			self.stack.push(Pose::identity());
+		}
+		// 上一行保证非空, 这里不可能失败; 用 `expect` 而非 `unwrap`
+		// 是因为它确实是一个内部不变量.
+		self.stack.last_mut().expect("just ensured non-empty")
+	}
+
 	// ================ 变换与状态改写 ================
 	//
 	// 以下变换都作用于栈顶, 并同步更新 `pose` 与 `normal`.
@@ -209,7 +233,7 @@ impl PoseStack {
 	///
 	/// 该操作只改写 `pose`. 平移不改变朝向, 因此 `normal` 保持原样.
 	pub fn translate(&mut self, x: f32, y: f32, z: f32) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose *= Mat4::from_translation(Vec3::new(x, y, z));
 		// `normal` 无需改动.
 		self
@@ -242,7 +266,7 @@ impl PoseStack {
 	/// 此处需要的是 3D 对角缩放, 必须用 `Mat3::from_diagonal(Vec3)`.
 	/// 两者视觉上相似, 但前者只作用于 xy, z 分量固定为 1.
 	pub fn scale(&mut self, x: f32, y: f32, z: f32) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose *= Mat4::from_scale(Vec3::new(x, y, z));
 
 		// 先处理均匀缩放这一特例.
@@ -276,7 +300,7 @@ impl PoseStack {
 	/// 旋转对 `pose` 与 `normal` 的作用相同 —— 旋转属于正交变换, 不会
 	/// 改变长度.
 	pub fn rotate(&mut self, q: Quat) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose *= Mat4::from_quat(q);
 		top.normal *= Mat3::from_quat(q);
 		self
@@ -289,7 +313,7 @@ impl PoseStack {
 	///
 	/// `normal` 只需施加旋转 —— 平移不会改变法线.
 	pub fn rotate_around(&mut self, q: Quat, x: f32, y: f32, z: f32) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		let pivot = Vec3::new(x, y, z);
 		top.pose *= Mat4::from_translation(pivot)
 			* Mat4::from_quat(q)
@@ -306,7 +330,7 @@ impl PoseStack {
 	/// 自行负责 —— 传入旋转矩阵时, 通常还需要同步旋转 `normal`. 正因
 	/// 如此, 该方法是低层接口, 而不是推荐用法.
 	pub fn mul_matrix(&mut self, m: Mat4) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose *= m;
 		self
 	}
@@ -315,7 +339,7 @@ impl PoseStack {
 	///
 	/// 该操作跳过所有计算, 适合从缓存中恢复状态.
 	pub fn set_pose(&mut self, pose: Mat4, normal: Mat3) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose = pose;
 		top.normal = normal;
 		self
@@ -323,7 +347,7 @@ impl PoseStack {
 
 	/// 把栈顶的矩阵对重置为单位矩阵.
 	pub fn set_identity(&mut self) -> &mut Self {
-		let top = self.stack.last_mut().expect("stack is never empty");
+		let top = self.top_mut();
 		top.pose = Mat4::IDENTITY;
 		top.normal = Mat3::IDENTITY;
 		self

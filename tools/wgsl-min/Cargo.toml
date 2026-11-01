@@ -1,0 +1,13 @@
+[package]
+name = "wgsl-min"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Generate shaders/*.min.wgsl from shaders/*.wgsl via nagami."
+
+# 独立 workspace: 不进入 blaze3d 的依赖图.
+#
+# 没有 `[dependencies]`: 压缩工作交给外部 `nagami` 可执行文件
+# (`cargo install nagami`), 本工具只负责遍历目录, 替换模板占位符,
+# 并在 `--check` 模式下比较产物.
+[workspace]

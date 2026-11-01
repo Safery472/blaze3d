@@ -172,6 +172,25 @@ pub enum Error {
 	#[error("vertex stride would overflow u32")]
 	StrideOverflow,
 
+	/// 格式的 stride 不满足 wgpu 的对齐要求.
+	///
+	/// 由 [`VertexFormat::new`][] 返回. wgpu 要求 `VertexBufferLayout` 的
+	/// `array_stride` 是 [`wgpu::VERTEX_ALIGNMENT`] (4 字节) 的倍数, 否则
+	/// 在创建管线时报验证错误.
+	///
+	/// # 常见成因
+	///
+	/// 逐个累加元素字节数得到的总量不是 4 的倍数 —— 例如 `(Normal, Byte, 3)`
+	/// 在 wgpu 侧映射为 `Snorm8x4`, 按 4 字节计入后通常能对齐; 仍不对齐时,
+	/// 多半是某个 `Padding` 的字节数写错了.
+	///
+	/// [`VertexFormat::new`]: crate::vertex::format::VertexFormat::new
+	#[error("vertex stride {stride} is not a multiple of 4 (wgpu VERTEX_ALIGNMENT)")]
+	StrideMisaligned {
+		/// 累加得到的 stride.
+		stride: u32,
+	},
+
 	/// UV 以外的用途带了非零 `index`.
 	///
 	/// 由 [`VertexFormatElement::new`][] 返回. UV 用途的 `index` 表示 UV

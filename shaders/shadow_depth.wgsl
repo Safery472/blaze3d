@@ -1,6 +1,12 @@
-// 阴影深度 pass 的着色器.
+// 阴影深度 pass 的着色器 (实例化网格版本).
 //
 // 只需要顶点位置 —— 深度由固定的深度附件写入.
+//
+// # 适用范围
+//
+// 本份按 `instance_index` 取 model 矩阵, **只能**配合
+// `PassHelper::draw_mesh_instanced`. 普通网格用 `shadow_depth_mesh.wgsl`,
+// 蒙皮网格用 `shadow_depth_skinned.wgsl`.
 //
 // # Bind group 约定
 //

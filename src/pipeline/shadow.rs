@@ -57,6 +57,19 @@
 //! }
 //! ```
 //!
+//! # 阴影着色器的绘制方式
+//!
+//! 第 1 步里用哪种着色器决定用哪个绘制方法. 仓库内置的
+//! `shaders/shadow_depth.wgsl` 从 group 1 的 storage buffer 按
+//! `instance_index` 取 model 矩阵, 因此**只能**配合
+//! [`crate::system::PassHelper::draw_mesh_instanced`]
+//! ([`crate::system::PassHelper::draw_mesh_instanced_skinned`] 的实例
+//! 数据里带着骨骼偏移, 但内置着色器不读骨骼矩阵).
+//!
+//! 普通 [`crate::system::PassHelper::draw_mesh`] 不传 `instance_index`,
+//! 着色器取到的是第 0 个实例的矩阵 —— 非实例化网格要另写读 group 1
+//! object uniform 的阴影着色器; 蒙皮网格还要再加骨骼矩阵路径.
+//!
 //! [`Target`]: crate::pipeline::Target
 
 use glam::{Mat4, Vec3, Vec4};
@@ -67,6 +80,7 @@ use crate::texture::Sampler;
 
 use super::error::Result;
 use super::target::RenderTarget;
+use super::transform::look_at_rh;
 
 /// 阴影贴图使用的深度格式.
 ///
@@ -175,6 +189,28 @@ impl ShadowMap {
 
 	// ================ 光源视角矩阵 ================
 
+	/// 按包围盒与光源方向直接算出光源视角矩阵, 不需要先建纹理.
+	///
+	/// # 用途
+	///
+	/// - 只需要投影矩阵、不需要阴影贴图的场景 (例如自写阴影 pass, 或
+	///   先算好矩阵再决定分辨率).
+	/// - 测试: 本函数不碰 GPU, 可以直接断言投影的覆盖范围.
+	///
+	/// # 参数
+	///
+	/// - `scene_bounds` —— 场景的世界空间包围盒, 决定正交投影范围.
+	/// - `light_direction` —— 光源方向 (世界空间, 由光源指向场景).
+	///   内部会归一化.
+	///
+	/// # 退化输入
+	///
+	/// 与 [`Self::new`] 相同: 空包围盒按 `radius = 0.01` 兜底, 零光源
+	/// 方向按 `-Y` 兜底.
+	pub fn light_view_projection_for(scene_bounds: Aabb, light_direction: Vec3) -> Mat4 {
+		compute_light_view_projection(scene_bounds, light_direction)
+	}
+
 	/// 返回光源视角的视图投影矩阵.
 	///
 	/// # 用途
@@ -261,6 +297,9 @@ impl ShadowMap {
 	/// ```ignore
 	/// system.render_frame(shadow_map.target(), |pass| { ... });
 	/// ```
+	///
+	/// 阴影 pass 不需要颜色输出: 这个占位的颜色附件只消耗带宽,
+	/// 写入内容随即被丢弃.
 	pub fn target(&self) -> &RenderTarget {
 		&self.target
 	}
@@ -318,7 +357,9 @@ impl ShadowMap {
 ///    长度的一半.
 /// 2. 光源相机放在 `center - light_direction * radius * 2`.
 /// 3. 正交投影覆盖 `[-radius, radius]` 的正方形.
-/// 4. `near = 0.1`, `far = radius * 4` —— 覆盖从相机到场景远端.
+/// 4. `near = radius * 0.5`, `far = radius * 3.5` —— 场景落在到相机
+///    距离 `radius` 到 `3 * radius` 的区间内; 两个平面都与 `radius` 成
+///    正比, 任意小的场景都不会出现 `near >= far`.
 ///
 /// # 为什么用包围球而非包围盒
 ///
@@ -354,9 +395,22 @@ fn compute_light_view_projection(scene_bounds: Aabb, light_direction: Vec3) -> M
 	let view = look_at_rh(eye, center, up);
 
 	// 正交投影: 横纵半宽相等, 即正方形视锥.
+	//
+	// 横纵方向保持不变. `near` / `far` 必须随 `radius` 一起缩放: 相机在
+	// `center - dir * 2 * radius` 处, 场景永远落在到相机的 `[radius, 3 * radius]`
+	// 区间里.
+	//
+	// **不要**把 `near` 写成常数 0.1: `radius < 0.1 / 3.5` 时
+	// `far = 3.5 * radius` 会小于 `near`, `near - far` 变号, 投影矩阵
+	// 整体翻转, 场景中心被映射到 `[0, 1]` 之外 —— 小方块与小实体场景的
+	// 阴影会整片消失. 旧实现取 `near = 0.1`, `far = 4 * radius`,
+	// `radius = 0.02` 时场景中心的 NDC z 已经是 -0.797.
+	//
+	// 取 `near = radius * 0.5`, `far = radius * 3.5`: 两侧各留 `radius / 2`
+	// 的余量, 容纳光源相机与场景之间的额外几何.
 	let half_size = radius;
-	let near = 0.1;
-	let far = radius * 4.0;
+	let near = radius * 0.5;
+	let far = radius * 3.5;
 	let nf = near - far;
 
 	let proj = Mat4::from_cols(
@@ -367,35 +421,4 @@ fn compute_light_view_projection(scene_bounds: Aabb, light_direction: Vec3) -> M
 	);
 
 	proj * view
-}
-
-/// 构造右手系 look-at 视图矩阵.
-///
-/// `glam 0.34` 移除了 `Mat4::look_at_rh`, 因此这里手工构造. 旋转部分
-/// 与 [`crate::camera::PerspectiveCamera::look_at`] 一致, 区别在于本
-/// 函数直接返回完整的视图矩阵, 而不是旋转四元数.
-///
-/// # 参数
-///
-/// - `eye` —— 相机位置.
-/// - `target` —— 注视点.
-/// - `up` —— 世界空间的「上」方向. 与视线平行时结果未定义, 调用方
-///   需自行保证不退化.
-fn look_at_rh(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
-	// `away` 即相机的 +Z 轴 (背离视线方向).
-	let away = (eye - target).normalize();
-	let right = up.cross(away).normalize();
-	let up = away.cross(right);
-
-	// 相机在世界空间的变换: 前三列依次是 `right` / `up` / `away`,
-	// 平移列是 `eye`.
-	let world = Mat4::from_cols(
-		right.extend(0.0),
-		up.extend(0.0),
-		away.extend(0.0),
-		eye.extend(1.0),
-	);
-
-	// 视图矩阵即世界变换的逆矩阵.
-	world.inverse()
 }

@@ -99,6 +99,19 @@ pub enum Error {
 	#[error("surface has no supported format")]
 	NoSurfaceFormat,
 
+	/// 用给定尺寸配置表面时尺寸任一维为 0.
+	///
+	/// 由 [`crate::pipeline::configure_surface`] 返回. wgpu 不接受零尺寸
+	/// 的 `SurfaceConfiguration` —— 窗口最小化时 `inner_size()` 就是
+	/// `0x0`, 调用方需要等到下一次 resize 再配置.
+	#[error("surface size must be non-zero (got {width}x{height})")]
+	InvalidSurfaceSize {
+		/// 请求的宽度.
+		width: u32,
+		/// 请求的高度.
+		height: u32,
+	},
+
 	/// 表面格式无法映射到 [`crate::state::ColorFormat`].
 	#[error("surface format {format:?} is not supported by ColorFormat")]
 	UnsupportedSurfaceFormat {
@@ -117,6 +130,37 @@ pub enum Error {
 	ReadbackUnsupportedFormat {
 		/// 触发条件的格式.
 		format: wgpu::TextureFormat,
+	},
+
+	/// 读回的纹理是多重采样的.
+	///
+	/// 由 [`crate::pipeline::read_texture`] 返回. wgpu 不允许
+	/// `copy_texture_to_buffer` 直接读 MSAA 纹理 —— 必须先用
+	/// `resolve` 解析到单采样纹理.
+	#[error("readback requires a single-sampled texture (got sample_count {count})")]
+	ReadbackUnsupportedSampleCount {
+		/// 纹理实际的采样数.
+		count: u32,
+	},
+
+	/// 读回的源资源缺少 `COPY_SRC` 用途.
+	///
+	/// 由 [`crate::pipeline::read_texture`] 与
+	/// [`crate::pipeline::read_buffer`] 返回.
+	#[error("readback source is missing the COPY_SRC usage")]
+	ReadbackMissingSource,
+
+	/// 读回请求的字节数不合法.
+	///
+	/// 由 [`crate::pipeline::read_buffer`] 返回. `size` 必须是
+	/// [`wgpu::COPY_BUFFER_ALIGNMENT`] 的倍数, 且不得超过源缓冲的
+	/// 容量.
+	#[error("readback size {size} is invalid for a buffer of {buffer_size} bytes")]
+	ReadbackInvalidSize {
+		/// 调用方请求的字节数.
+		size: u64,
+		/// 源缓冲的总字节数.
+		buffer_size: u64,
 	},
 
 	/// 读回的缓冲映射失败.

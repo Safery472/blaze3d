@@ -101,7 +101,7 @@ pub mod chain;
 pub mod graph;
 pub mod quad;
 
-pub use chain::{PostProcessChain, PostProcessInput, PostProcessPass};
+pub use chain::{InputBindings, PostProcessChain, PostProcessInput, PostProcessPass};
 pub use graph::{
 	input_from_chain, ExtraInput, NodeId, NodeInput, PostProcessGraph,
 	PostProcessNode,

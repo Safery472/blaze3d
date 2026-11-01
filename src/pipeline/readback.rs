@@ -35,6 +35,7 @@ use super::target::RenderTarget;
 /// # 前置条件
 ///
 /// - 纹理带 `COPY_SRC` 用途.
+/// - 纹理是单采样 (MSAA 需要先 resolve).
 /// - `width` / `height` 是纹理 mip 0 的实际尺寸.
 /// - `format` 与纹理创建时的格式一致.
 /// - 格式是未压缩的 2D 格式.
@@ -48,6 +49,8 @@ use super::target::RenderTarget;
 ///
 /// - 尺寸为 0: [`Error::ZeroSize`].
 /// - 格式不支持: [`Error::ReadbackUnsupportedFormat`].
+/// - 纹理是 MSAA: [`Error::ReadbackUnsupportedSampleCount`].
+/// - 纹理缺 `COPY_SRC`: [`Error::ReadbackMissingSource`].
 /// - 缓冲映射失败: [`Error::ReadbackMapFailed`].
 /// - 等待 GPU 完成失败: [`Error::ReadbackPollFailed`].
 ///
@@ -69,14 +72,31 @@ pub fn read_texture(
 
 	let bytes_per_pixel = bytes_per_pixel(format)?;
 
+	// MSAA 纹理不能作为 copy 源 —— wgpu 要求先 resolve 到单采样纹理.
+	// 在这里拦下, 而不是让 `copy_texture_to_buffer` 报验证错误.
+	if texture.sample_count() != 1 {
+		return Err(Error::ReadbackUnsupportedSampleCount {
+			count: texture.sample_count(),
+		});
+	}
+	if !texture
+		.usage()
+		.contains(wgpu::TextureUsages::COPY_SRC)
+	{
+		return Err(Error::ReadbackMissingSource);
+	}
+
 	// wgpu 要求 copy_texture_to_buffer 的 bytes_per_row 对齐到
 	// COPY_BYTES_PER_ROW_ALIGNMENT (256 字节), 或者一次 copy 整个 mip.
 	// 前者更通用.
-	let unpadded_bytes_per_row = width * bytes_per_pixel;
+	//
+	// 行宽用 `u64` 计算: 设备上限的最大纹理 (16384 像素) 乘以 16 字节
+	// 每像素恰好超出 `u32` 范围, 用 `u32` 会在 debug 下溢出 panic.
+	let unpadded_bytes_per_row = width as u64 * bytes_per_pixel as u64;
 	let padded_bytes_per_row =
-		align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+		align_to_u64(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64);
 
-	let buffer_size = padded_bytes_per_row as u64 * height as u64;
+	let buffer_size = padded_bytes_per_row * height as u64;
 
 	let buffer = device.create_buffer(&wgpu::BufferDescriptor {
 		label: Some("blaze3d_readback_buffer"),
@@ -100,7 +120,7 @@ pub fn read_texture(
 			buffer: &buffer,
 			layout: wgpu::TexelCopyBufferLayout {
 				offset: 0,
-				bytes_per_row: Some(padded_bytes_per_row),
+				bytes_per_row: Some(padded_bytes_per_row as u32),
 				rows_per_image: Some(height),
 			},
 		},
@@ -140,8 +160,8 @@ pub fn read_texture(
 		.get_mapped_range()
 		.map_err(|_| Error::ReadbackMapFailed)?;
 
-	let mut pixels = Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
-	for row in 0..height {
+	let mut pixels = Vec::with_capacity((unpadded_bytes_per_row * height as u64) as usize);
+	for row in 0..height as u64 {
 		let start = (row * padded_bytes_per_row) as usize;
 		let end = start + unpadded_bytes_per_row as usize;
 		pixels.extend_from_slice(&mapped[start..end]);
@@ -200,13 +220,15 @@ pub fn read_target(
 ///
 /// # 错误
 ///
+/// - `size` 不是 4 的倍数或超出缓冲容量: [`Error::ReadbackInvalidSize`].
+/// - 缓冲缺 `COPY_SRC`: [`Error::ReadbackMissingSource`].
 /// - 缓冲映射失败: [`Error::ReadbackMapFailed`].
 /// - 等待 GPU 完成失败: [`Error::ReadbackPollFailed`].
 ///
 /// # 大小
 ///
-/// `size` 必须是 4 的倍数 —— wgpu 对 `copy_buffer_to_buffer` 的大小有
-/// 对齐要求, 由调用方保证.
+/// `size` 必须是 [`wgpu::COPY_BUFFER_ALIGNMENT`] (4 字节) 的倍数, 且
+/// 不得超过 `buffer.size()`; 违反时返回错误而不是交给 wgpu 校验.
 pub fn read_buffer(
 	device: &wgpu::Device,
 	queue: &wgpu::Queue,
@@ -215,6 +237,24 @@ pub fn read_buffer(
 ) -> Result<Vec<u8>> {
 	if size == 0 {
 		return Ok(Vec::new());
+	}
+
+	// 下列三项 wgpu 都会在提交时报验证错误. 提前拦截, 调用方才能从
+	// `Result` 得知原因.
+	if !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
+		return Err(Error::ReadbackInvalidSize {
+			size,
+			buffer_size: buffer.size(),
+		});
+	}
+	if size > buffer.size() {
+		return Err(Error::ReadbackInvalidSize {
+			size,
+			buffer_size: buffer.size(),
+		});
+	}
+	if !buffer.usage().contains(wgpu::BufferUsages::COPY_SRC) {
+		return Err(Error::ReadbackMissingSource);
 	}
 
 	let staging = device.create_buffer(&wgpu::BufferDescriptor {
@@ -282,6 +322,6 @@ fn bytes_per_pixel(format: wgpu::TextureFormat) -> Result<u32> {
 }
 
 /// 把 `n` 向上对齐到 `align` 的倍数.
-fn align_to(n: u32, align: u32) -> u32 {
+fn align_to_u64(n: u64, align: u64) -> u64 {
 	n.div_ceil(align) * align
 }
